@@ -13,6 +13,7 @@
 (ns verify-cljs
   (:require [clojure.test :as t]
             [storj.node.id-test]
+            [storj.node.identity-test]
             [storj.node.orders-test]
             [storj.node.pb-test]
             [storj.node.piece-test]))
@@ -25,6 +26,7 @@
         (js/process.exit 1))))
 
 (t/run-tests 'storj.node.id-test
+             'storj.node.identity-test
              'storj.node.orders-test
              'storj.node.pb-test
              'storj.node.piece-test)
