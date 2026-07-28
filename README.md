@@ -12,6 +12,8 @@ Storj a node is.
 | Namespace | What it owns |
 |---|---|
 | `storj.node.id` | Node IDs — base58check, the version byte, difficulty. |
+| `storj.node.identity` | What a peer's certificate chain says, and whether to believe it. |
+| `storj.node.der` | Just enough DER to read an X.509 certificate. |
 | `storj.node.pb` | The Storj messages, and **the exact bytes their signatures cover**. |
 | `storj.node.orders` | Whether an order limit may be acted on, and every reason it may not. |
 | `storj.node.piece` | Blob paths and the V1 piece header. |
@@ -31,12 +33,16 @@ Implemented and tested on two runtimes:
 - Admission of an order limit: addressed to this node, unexpired, action
   matches, signature valid — with the crypto deliberately last.
 - Blob path derivation and the 512-byte V1 piece header.
+- Reading a peer's certificate chain, deriving its node id from the CA key,
+  and admitting or refusing it — chain signatures, difficulty floor, expected
+  id, identity version, extension rules.
 
 **Not implemented.** A node built on this would still need all of it:
 
-- **DRPC over TLS**, with Storj's peer certificate rules and node ID
-  verification against the presented chain. This is the largest missing
-  piece and the reason nothing here can yet talk to a satellite.
+- **The TLS handshake and the socket.** The peer certificate *rules* are
+  implemented (`storj.node.identity`) and DRPC framing lives in
+  [`kotoba-lang/drpc`](https://github.com/kotoba-lang/drpc), but nothing here
+  terminates TLS or opens a connection.
 - **Identity generation** — the proof of work that mints an ID, and the CA
   and leaf certificates that carry it.
 - **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
@@ -67,6 +73,12 @@ So the expected values come from elsewhere:
   the literals in the tests.
 - **Published identities.** The four satellite node IDs Storj publishes are
   decoded in full: length, version byte, double-SHA-256 checksum, difficulty.
+- **A real generated identity.** `testdata/gen_identity.go` runs the same
+  `identity.NewCA` a node operator does, and the resulting certificates are
+  checked in. CI runs that program with `-verify`, which re-parses the fixture
+  with `storj.io/common` and asserts the node id, version and chain
+  relationships the tests claim — holding the fixture to the reference
+  implementation rather than to a previous run of the generator.
 - **Both runtimes.** JVM and nbb run the same suite. SHA-256 comes from
   `MessageDigest` on one and `@noble/hashes` on the other, and varint
   handling has to survive JavaScript truncating bitwise operators at 32 bits.
@@ -84,7 +96,14 @@ A third came from Storj's own encoder disagreeing with a round trip: the last
 byte of a node ID is the **identity version**, not part of the hash. It is
 zeroed on encode and rewritten on decode, and `Difficulty()` skips it.
 
-The suite has been checked to fail when each of those is reintroduced.
+A fourth would have been just as quiet: an OID whose first byte is 80 or
+above encodes a first arc of 2, and dividing by 40 instead — the obvious
+reading — turns Storj's `2.999.2.1` identity-version extension into
+`24.39.2.1`, so every certificate would silently look unversioned.
+
+The suite has been checked to fail when each of those is reintroduced,
+including deriving the node id from the leaf rather than the CA, and dropping
+the self-signature check that ends a chain.
 
 ## Test
 
