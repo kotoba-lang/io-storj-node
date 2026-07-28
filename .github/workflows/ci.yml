@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  jvm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - run: clojure -M:lint
+      - run: clojure -M:test
+
+  cljs:
+    # Not redundant with the JVM job. SHA-256 comes from @noble/hashes here and
+    # java.security.MessageDigest there, so every node ID checksum is computed
+    # by different code; and varint handling has to survive JavaScript's
+    # bitwise operators truncating to int32 and doubles losing exactness past
+    # 2^53. A green JVM run is not evidence for either.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - run: npm install
+      - run: npm install -g nbb
+      - run: nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
+
+  vectors:
+    # The reference vectors in the tests are Storj's own output. This job
+    # regenerates them and fails if they have drifted — either because this
+    # repo edited a literal by hand, or because upstream changed what it signs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Regenerate and compare
+        run: |
+          set -euo pipefail
+          (cd testdata && go run gen_vectors.go > /tmp/vectors.edn)
+          # 1. upstream still emits what was recorded
+          diff -u testdata/vectors.edn /tmp/vectors.edn
+          # 2. and the tests still assert those exact bytes. Quotes and
+          #    whitespace are stripped so a vector split across a (str ...)
+          #    still matches.
+          for h in $(grep -o '"[0-9a-f]\{16,\}"' /tmp/vectors.edn | tr -d '"'); do
+            if ! tr -d ' "\n' < test/storj/node/pb_test.cljc | grep -q "$h"; then
+              echo "vector not asserted anywhere in pb_test.cljc: $h"
+              exit 1
+            fi
+          done
