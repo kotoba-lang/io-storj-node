@@ -12,7 +12,7 @@
 ;; to one runtime, which is the whole thing being avoided.
 {:paths ["src"]
  :deps {io.github.kotoba-lang/proto
-        {:git/sha "0eba39ede385ddf6894d5a099515064cf919aee8"}
+        {:git/sha "35a52b810e1f0dadfd6483b79714108c003a458d"}
         io.github.kotoba-lang/io-multiformats
         {:git/sha "310724803db65840f00d2d98d7887f2b6a512bd3"}
         io.github.kotoba-lang/drpc

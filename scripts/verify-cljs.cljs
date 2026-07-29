@@ -19,6 +19,8 @@
 (ns verify-cljs
   (:require [clojure.test :as t]
             [storj.node.certificate-test]
+            [storj.node.contact-test]
+            [storj.node.host.rpc-test]
             [storj.node.host.verify-test]
             [storj.node.id-test]
             [storj.node.identity-test]
@@ -37,6 +39,8 @@
         (js/process.exit 1))))
 
 (t/run-tests 'storj.node.certificate-test
+             'storj.node.contact-test
+             'storj.node.host.rpc-test
              'storj.node.host.verify-test
              'storj.node.id-test
              'storj.node.identity-test

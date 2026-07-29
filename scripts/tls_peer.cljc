@@ -17,6 +17,7 @@
   requires it, and `scripts/` is not on `:paths`."
   (:require [clojure.string :as str]
             [drpc.client :as drpc]
+            [storj.node.contact :as contact]
             [storj.node.bytes :as b]
             [storj.node.host.rpc :as rpc]
             [storj.node.host.keys :as hk]
@@ -192,11 +193,56 @@
                      (println (str "FAIL " (or (some-> e .-message) (str e))))
                      (js/process.exit 1)))))))
 
+(defn- report-check-in [result]
+  (if-let [msg (:message result)]
+    (let [r (contact/read-check-in-response (proto.wire/decode msg))]
+      (println (str "check-in ping=" (:ping-node-success r)
+                    " quic=" (:ping-node-success-quic r)))
+      (if (contact/admitted? r)
+        (do (println "ok   the satellite dialled this node back")
+            #?(:clj (System/exit 0) :cljs (js/process.exit 0)))
+        (do (println (str "refused " (:message (contact/refusal r))))
+            ;; a refusal is a *successful* exchange — the call worked and the
+            ;; introduction did not, and a harness that exits non-zero here
+            ;; cannot tell that apart from a broken transport
+            #?(:clj (System/exit 0) :cljs (js/process.exit 0)))))
+    (do (println (str "FAIL no response: " (pr-str result)))
+        #?(:clj (System/exit 1) :cljs (js/process.exit 1)))))
+
+(defn check-in
+  "Dial over TLS, verify the peer, then introduce this node to it."
+  [dir addr expect address]
+  (let [identity (load-identity dir)
+        [host port] (str/split addr #":")
+        opts {:host host :port #?(:clj (parse-long port) :cljs (js/parseInt port 10))
+              :identity identity
+              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))}
+        request (contact/check-in-request
+                 {:address  address
+                  :version  {:version "1.104.5" :release? true}
+                  :capacity {:free-disk 1099511627776}
+                  :operator {:email "op@example.com" :wallet "0xabc"}})
+        call-opts {:rpc contact/rpc :request request}]
+    #?(:clj
+       (let [c (htls/connect opts)]
+         (report (:peer c) expect)
+         (report-check-in (rpc/call (:socket c) call-opts)))
+       :cljs
+       (-> (htls/connect opts)
+           (.then (fn [c]
+                    (report (:peer c) expect)
+                    (-> (rpc/call (:socket c) call-opts)
+                        (.then report-check-in))))
+           (.catch (fn [e]
+                     (println (str "FAIL " (or (some-> e .-message) (str e))))
+                     (js/process.exit 1)))))))
+
 (defn run [[mode dir arg expect rpc-name payload]]
   (case mode
     "serve" (serve dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     "dial"  (dial dir arg expect)
     "call"  (call dir arg expect rpc-name payload)
+    "check-in" (check-in dir arg expect (or rpc-name "127.0.0.1:28967"))
     (do (println (str "usage: serve <dir> <port> | dial <dir> <host:port> [expect-hex]"
                       " | call <dir> <host:port> <expect-hex> <rpc> <payload>"))
         #?(:clj (System/exit 1) :cljs (js/process.exit 1)))))

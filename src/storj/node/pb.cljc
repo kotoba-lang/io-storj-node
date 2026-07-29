@@ -98,6 +98,43 @@
    5 :order-limit
    6 :hash-algorithm})
 
+(def check-in-request
+  "contact.proto `CheckInRequest`. Built by `storj.node.contact`; here so the
+  numbers live with every other schema rather than beside their one caller."
+  {1 :address
+   2 :version
+   3 :capacity
+   4 :operator
+   5 :noise-key-attestation
+   6 :debounce-limit
+   7 :features
+   8 :signed-tags})
+
+(def check-in-response
+  "contact.proto `CheckInResponse`.
+
+  `ping_node_success` is the satellite saying whether it could dial the node
+  *back*. A response with it false is a call that worked and an introduction
+  that did not."
+  {1 :ping-node-success
+   2 :ping-error-message
+   3 :ping-node-success-quic
+   4 :node-tag-success
+   5 :node-tag-error-message
+   6 :hashstore-settings})
+
+(def node-version
+  "node.proto `NodeVersion`."
+  {1 :version 2 :commit-hash 3 :timestamp 4 :release})
+
+(def node-capacity
+  "node.proto `NodeCapacity`. Field 1 is `free_bandwidth`, deprecated."
+  {1 :deprecated-free-bandwidth 2 :free-disk})
+
+(def node-operator
+  "node.proto `NodeOperator`."
+  {1 :email 2 :wallet 3 :wallet-features})
+
 (defn- number-of [schema k]
   (or (some (fn [[n name]] (when (= name k) n)) schema)
       (throw (ex-info "storj.node.pb: no such field" {:field k}))))

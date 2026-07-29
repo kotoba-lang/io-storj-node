@@ -64,6 +64,9 @@ jobs:
           # 4. identity.cert is Go's PEM for the recorded certificates.
           #    Unlike the identity itself this is deterministic, so it is
           #    rebuilt and diffed rather than merely re-verified.
+          # 5. the check-in request is still what pb.Marshal produces
+          (cd testdata && go run gen_checkin.go > /tmp/checkin-vectors.edn)
+          diff -u testdata/checkin-vectors.edn /tmp/checkin-vectors.edn
           (cd testdata && go run gen_identity.go -pem)
           git diff --exit-code testdata/identity.cert
           for h in $(grep -o '"[0-9a-f]\{16,\}"' testdata/sigs.edn | tr -d '"'); do
@@ -202,6 +205,25 @@ jobs:
             /echo.Echo/Echo 'hello from nbb' | tee /tmp/nbb-call.out
           grep -q 'response /echo.Echo/Echo:hello from nbb' /tmp/nbb-call.out
           cat /tmp/go-drpc.log
+      - name: A real check-in, parsed by storj.io/common
+        run: |
+          set -euo pipefail
+          (cd testdata && go run tls_peer.go -serve -drpc -identity /tmp/id-go -port 19449 > /tmp/go-checkin.log 2>&1) &
+          timeout 60 bash -c 'until grep -q listening /tmp/go-checkin.log 2>/dev/null; do sleep 1; done'
+          clojure -M:tls-peer check-in /tmp/id-cljc 127.0.0.1:19449 "$GO_ID" \
+            127.0.0.1:28967 | tee /tmp/jvm-checkin.out
+          grep -q 'ok   the satellite dialled this node back' /tmp/jvm-checkin.out
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+            check-in /tmp/id-cljc 127.0.0.1:19449 "$GO_ID" 127.0.0.1:28967 \
+            | tee /tmp/nbb-checkin.out
+          grep -q 'ok   the satellite dialled this node back' /tmp/nbb-checkin.out
+          # and the refusal path: a call that worked and an introduction that
+          # did not, which reading only the transport result reports as success
+          clojure -M:tls-peer check-in /tmp/id-cljc 127.0.0.1:19449 "$GO_ID" \
+            0.0.0.0:28967 | tee /tmp/jvm-refused.out
+          grep -q 'refused failed to dial storage node' /tmp/jvm-refused.out
+          cat /tmp/go-checkin.log
+          grep -q 'address="127.0.0.1:28967" version="1.104.5" free-disk=1099511627776' /tmp/go-checkin.log
       - name: A peer that is not the node we dialled is refused
         run: |
           set -euo pipefail
