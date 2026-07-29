@@ -16,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/hex"
 	"flag"
@@ -28,6 +29,8 @@ import (
 	"storj.io/common/identity"
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/storj"
+	"storj.io/drpc"
+	"storj.io/drpc/drpcserver"
 )
 
 // greeting is exchanged after the handshake so that both peers have to finish
@@ -71,6 +74,7 @@ func peerID(state tls.ConnectionState) (storj.NodeID, error) {
 
 func main() {
 	serve := flag.Bool("serve", false, "accept one connection and report the peer")
+	drpcMode := flag.Bool("drpc", false, "serve DRPC over the TLS listener instead of a greeting")
 	dial := flag.String("dial", "", "host:port to connect to")
 	dir := flag.String("identity", "", "identity directory")
 	port := flag.Int("port", 0, "port to listen on, 0 for any")
@@ -85,6 +89,8 @@ func main() {
 	opts := options(ident)
 
 	switch {
+	case *serve && *drpcMode:
+		doServeDRPC(opts, *port)
 	case *serve:
 		doServe(opts, *port, *expect)
 	case *dial != "":
@@ -139,6 +145,52 @@ func doServe(opts *tlsopts.Options, port int, expect string) {
 		os.Exit(1)
 	}
 	fmt.Println("ok   application data flowed both ways")
+}
+
+// raw is a drpc.Message that is its own bytes, and rawEncoding passes them
+// through. No generated code: drpc.Handler is one method and drpc.Encoding is
+// two, so a byte-passing encoding answers a unary call without protoc.
+type raw struct{ data []byte }
+
+type rawEncoding struct{}
+
+func (rawEncoding) Marshal(msg drpc.Message) ([]byte, error) { return msg.(*raw).data, nil }
+
+func (rawEncoding) Unmarshal(buf []byte, msg drpc.Message) error {
+	m := msg.(*raw)
+	m.data = append([]byte(nil), buf...)
+	return nil
+}
+
+// echo answers with `<rpc>:<request>`, so a passing test proves the rpc name
+// was routed rather than that some bytes came back.
+type echo struct{}
+
+func (echo) HandleRPC(stream drpc.Stream, rpc string) error {
+	var in raw
+	if err := stream.MsgRecv(&in, rawEncoding{}); err != nil {
+		return err
+	}
+	fmt.Printf("rpc %s (%d bytes)\n", rpc, len(in.data))
+	out := raw{data: append([]byte(rpc+":"), in.data...)}
+	return stream.MsgSend(&out, rawEncoding{})
+}
+
+// doServeDRPC is the whole stack on the reference side: Storj's mutual TLS
+// underneath, Storj's DRPC on top. A client that gets an answer out of this
+// has done every step a real node does before it says anything.
+func doServeDRPC(opts *tlsopts.Options, port int) {
+	listener, err := tls.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port), opts.ServerTLSConfig())
+	if err != nil {
+		fmt.Printf("FAIL listen: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("listening %d\n", listener.Addr().(*net.TCPAddr).Port)
+	_ = os.Stdout.Sync()
+
+	if err := drpcserver.New(echo{}).Serve(context.Background(), listener); err != nil {
+		fmt.Printf("serve ended: %v\n", err)
+	}
 }
 
 func doDial(opts *tlsopts.Options, addr, expect string) {

@@ -123,7 +123,10 @@ jobs:
     # reports the node ID the other minted.
     #
     # All four combinations, because a client and a server are not the same
-    # code and neither runtime is the other. The exchange after the handshake
+    # code and neither runtime is the other. The last step goes further and
+    # makes a DRPC call on the connection: mutual TLS, node id verified, then
+    # an answer from a server built out of tlsopts *and* drpcserver — every
+    # step a real node takes before it says anything. The exchange after the handshake
     # is not decoration: on TLS 1.3 a client that hangs up right after its own
     # Finished leaves the server reporting EOF while the client reports
     # success, which is exactly what happened the first time this ran.
@@ -186,6 +189,19 @@ jobs:
           wait
           cat /tmp/nbb-serve.log
           grep -q "application data flowed" /tmp/nbb-serve.log
+      - name: DRPC over the verified connection, from both runtimes
+        run: |
+          set -euo pipefail
+          (cd testdata && go run tls_peer.go -serve -drpc -identity /tmp/id-go -port 19448 > /tmp/go-drpc.log 2>&1) &
+          timeout 60 bash -c 'until grep -q listening /tmp/go-drpc.log 2>/dev/null; do sleep 1; done'
+          clojure -M:tls-peer call /tmp/id-cljc 127.0.0.1:19448 "$GO_ID" \
+            /echo.Echo/Echo 'hello from jvm' | tee /tmp/jvm-call.out
+          grep -q 'response /echo.Echo/Echo:hello from jvm' /tmp/jvm-call.out
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+            call /tmp/id-cljc 127.0.0.1:19448 "$GO_ID" \
+            /echo.Echo/Echo 'hello from nbb' | tee /tmp/nbb-call.out
+          grep -q 'response /echo.Echo/Echo:hello from nbb' /tmp/nbb-call.out
+          cat /tmp/go-drpc.log
       - name: A peer that is not the node we dialled is refused
         run: |
           set -euo pipefail
