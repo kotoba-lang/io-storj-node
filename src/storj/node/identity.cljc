@@ -135,6 +135,16 @@
     (if (seq v) (first v) id/version-0)
     id/version-0))
 
+(defn node-id-from-public-key
+  "The node id a DER SubjectPublicKeyInfo names, at a given identity version.
+
+  Split out from `node-id` because minting runs this in a loop over keys that
+  have no certificate yet — `identity.GenerateKey` derives the id from the key
+  and builds the certificate around whichever one wins."
+  [spki-der version]
+  (let [digest (b/sha256d spki-der)]
+    (conj (subvec digest 0 (dec id/id-length)) version)))
+
 (defn node-id
   "The node id a CA certificate names.
 
@@ -143,8 +153,7 @@
   by `storj.NewVersionedID`. Give it the **CA** certificate; the leaf's key is
   a different key and produces a different, meaningless id."
   [ca-cert]
-  (let [digest (b/sha256d (:spki-der ca-cert))]
-    (conj (subvec digest 0 (dec id/id-length)) (version ca-cert))))
+  (node-id-from-public-key (:spki-der ca-cert) (version ca-cert)))
 
 ;; ── admission ────────────────────────────────────────────────────────────────
 

@@ -161,3 +161,104 @@
   "Hex of an element's own bytes, for identifying it in a message."
   [element]
   (b/hex (:der element)))
+
+;; ── writing ─────────────────────────────────────────────────────────────────
+;;
+;; Minting an identity means producing certificates, and producing a
+;; certificate means writing DER. The writer is deliberately not the reader
+;; run backwards: it takes structure and emits bytes, with no notion of the
+;; input it might have come from.
+;;
+;; Names are `encode-*` rather than `sequence`, `set`, `integer` because those
+;; are `clojure.core` and because `oid` is already the reader's.
+
+(defn- length-octets [n]
+  (if (< n 0x80)
+    [n]
+    (let [bs (loop [v n, out ()]
+               (if (zero? v) (vec out) (recur (quot v 256) (conj out (mod v 256)))))]
+      (into [(bit-or 0x80 (count bs))] bs))))
+
+(defn encode-tlv
+  "One element: identifier octet, definite length, contents."
+  [identifier contents]
+  (let [c (vec contents)]
+    (into (into [identifier] (length-octets (count c))) c)))
+
+(defn encode-sequence [& children] (encode-tlv 0x30 (apply concat children)))
+(defn encode-set      [& children] (encode-tlv 0x31 (apply concat children)))
+
+(defn encode-explicit
+  "A context-specific constructed tag wrapping one element — `[n] EXPLICIT`."
+  [n contents]
+  (encode-tlv (bit-or 0xa0 n) contents))
+
+(defn encode-boolean
+  "DER admits exactly one encoding of true, and it is 0xff rather than any
+  nonzero byte."
+  [b]
+  (encode-tlv 0x01 [(if b 0xff 0x00)]))
+
+(defn encode-integer
+  "A non-negative INTEGER from its magnitude bytes.
+
+  Leading zeros are dropped and one is added back when the top bit is set,
+  because an INTEGER is two's complement and a 16-byte serial number with a
+  high first byte would otherwise encode as negative. Certificates in the wild
+  carry the extra byte for exactly this reason — Storj's own serials are 17
+  bytes on the wire for 128 bits of randomness."
+  [magnitude]
+  (let [m (drop-while zero? (vec magnitude))
+        m (if (empty? m) [0] (vec m))]
+    (encode-tlv 0x02 (if (>= (first m) 0x80) (into [0] m) m))))
+
+(defn encode-octet-string [bs] (encode-tlv 0x04 (vec bs)))
+
+(defn encode-bit-string
+  "A BIT STRING whose contents are `bs`, with `unused` trailing bits ignored."
+  ([bs] (encode-bit-string bs 0))
+  ([bs unused] (encode-tlv 0x03 (into [unused] (vec bs)))))
+
+(defn encode-oid
+  "An OBJECT IDENTIFIER from its dotted form.
+
+  The first subidentifier is `40 * a + b`, which is why the reader's rule
+  about values of 80 and above is its inverse rather than a special case:
+  `2.999` is `40*2 + 999 = 1079`, two base-128 octets, and nothing about the
+  encoding says the first arc was 2."
+  [dotted]
+  (let [arcs (mapv #?(:clj  #(Long/parseLong %)
+                      :cljs #(js/parseInt % 10))
+                   (str/split dotted #"\."))
+        _    (when (< (count arcs) 2)
+               (fail "an OBJECT IDENTIFIER needs at least two arcs" {:oid dotted}))
+        subs' (into [(+ (* 40 (first arcs)) (second arcs))] (drop 2 arcs))
+        ;; `loop` bindings are sequential, so the accumulator has to be seeded
+        ;; from the original value under a different name — seeding it from a
+        ;; rebound `v` collapses every subidentifier under 128 to zero, which
+        ;; turns every OID here into the same OID.
+        base128 (fn [value]
+                  (loop [q (quot value 128), out [(bit-and value 0x7f)]]
+                    (if (zero? q)
+                      out
+                      (recur (quot q 128) (into [(bit-or 0x80 (bit-and q 0x7f))] out)))))]
+    (encode-tlv 0x06 (vec (mapcat base128 subs')))))
+
+(defn- ascii [s]
+  (mapv (fn [c]
+          (let [v #?(:clj (int c) :cljs (.charCodeAt c 0))]
+            (when (> v 0x7f)
+              (fail "not representable in this string type" {:string s}))
+            v))
+        s))
+
+(defn encode-printable-string [s] (encode-tlv 0x13 (ascii s)))
+
+(defn encode-generalized-time
+  "A GeneralizedTime, already formatted as `YYYYMMDDhhmmssZ`.
+
+  Not a moment and not a clock: the only time a Storj certificate carries is
+  Go's zero time, and turning that into a date here would mean this namespace
+  had opinions about calendars."
+  [s]
+  (encode-tlv 0x18 (ascii s)))

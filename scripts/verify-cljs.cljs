@@ -18,9 +18,11 @@
 ;;   nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
 (ns verify-cljs
   (:require [clojure.test :as t]
+            [storj.node.certificate-test]
             [storj.node.host.verify-test]
             [storj.node.id-test]
             [storj.node.identity-test]
+            [storj.node.mint-test]
             [storj.node.orders-test]
             [storj.node.pb-test]
             [storj.node.piece-test]))
@@ -32,9 +34,11 @@
     (do (println "FAILED on the ClojureScript path")
         (js/process.exit 1))))
 
-(t/run-tests 'storj.node.host.verify-test
+(t/run-tests 'storj.node.certificate-test
+             'storj.node.host.verify-test
              'storj.node.id-test
              'storj.node.identity-test
+             'storj.node.mint-test
              'storj.node.orders-test
              'storj.node.pb-test
              'storj.node.piece-test)

@@ -26,6 +26,12 @@
   ;; carries a main.
   :cljs {:extra-paths ["test"]}
 
+  ;; `scripts/` is not on :paths — nothing in the library loads it, and a
+  ;; consumer pulling this in as a git dep should not get a `mint-identity`
+  ;; namespace they did not ask for.
+  :mint {:extra-paths ["scripts"]
+         :main-opts ["-m" "mint-identity"]}
+
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
          :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
                      "--fail-level" "error"]}}}
