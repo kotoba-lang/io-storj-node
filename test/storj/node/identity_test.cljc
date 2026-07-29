@@ -16,52 +16,12 @@
   (:require [clojure.test :refer [deftest is testing]]
             [storj.node.bytes :as b]
             [storj.node.der :as der]
+            [storj.node.fixture :refer [ca-der ca-spki-der chain expected-difficulty
+                                        leaf-der node-id-b58 node-id-hex unhex]]
             [storj.node.id :as node-id]
             [storj.node.host.verify :as v]
             [storj.node.identity :as ident]
             [storj.node.protocols :as p]))
-
-(defn- unhex [s]
-  (mapv #?(:clj  #(Integer/parseInt % 16)
-           :cljs #(js/parseInt % 16))
-        (re-seq #"[0-9a-fA-F]{2}" s)))
-
-;; ── fixture — testdata/identity.edn, do not hand-edit ───────────────────────
-
-(def ca-der
-  (unhex (str "3082016f30820116a003020102021100e0e85972cb9f4bc4a9c7fd2de3d2e105300a06"
-              "082a8648ce3d0403023010310e300c060355040a130553746f726a3022180f30303031"
-              "303130313030303030305a180f30303031303130313030303030305a3010310e300c06"
-              "0355040a130553746f726a3059301306072a8648ce3d020106082a8648ce3d03010703"
-              "420004d60d807db7ab8ab86984a68a811eba82dd555926be3c0d1f4aadaf99a3616f95"
-              "1b836a071a7fea4d78c073a6ac7d9a6f6741c4b9ac23e6dd740ec03042b693d4a34d30"
-              "4b300e0603551d0f0101ff040403020204300f0603551d130101ff040530030101ff30"
-              "1d0603551d0e041604143c232d6941c0f96c2aa70642bda4f02df45d18ff3009060488"
-              "370201040100300a06082a8648ce3d040302034700304402202b4a233154f4fba7a35a"
-              "79c343cc250e7f2969dd6dfc558b9e0cf9fa075512b2022051c0b57d21d7fbc99af56d"
-              "c81df182615274e4e136373e3cabf73e6bb94cb589")))
-
-(def leaf-der
-  (unhex (str "3082016130820108a003020102021100ec18bc171a10ac2a4eacb352abbaf085300a06"
-              "082a8648ce3d0403023010310e300c060355040a130553746f726a3022180f30303031"
-              "303130313030303030305a180f30303031303130313030303030305a3010310e300c06"
-              "0355040a130553746f726a3059301306072a8648ce3d020106082a8648ce3d03010703"
-              "4200048a56ec7b312a058f860dfac078088f8ecba5869502954a57ecee568c7d1de5dc"
-              "de91f0d6866c02c150b9bcabf01f9c9386bc58eff11c5503c63e8527c4c5ac52a33f30"
-              "3d300e0603551d0f0101ff0404030205a0301d0603551d250416301406082b06010505"
-              "07030106082b06010505070302300c0603551d130101ff04023000300a06082a8648ce"
-              "3d0403020347003044022066d8d15e2a40d35b16126bea4a99f31bc69c92723d29eb38"
-              "0cc95798bbb14b0302205622d4ed1ebf9119894d7b9fc8a67519361ec558a0db106aaf"
-              "af999169a55159")))
-
-(def ca-spki-der
-  (unhex (str "3059301306072a8648ce3d020106082a8648ce3d03010703420004d60d807db7ab8ab8"
-              "6984a68a811eba82dd555926be3c0d1f4aadaf99a3616f951b836a071a7fea4d78c073"
-              "a6ac7d9a6f6741c4b9ac23e6dd740ec03042b693d4")))
-
-(def node-id-hex "92a64c34cd5ba09161c96a0ee1200b34881b7d0378587946978ee11f59440c00")
-(def node-id-b58 "127ay6iM21ux5yyKqysaUAPCK8VnUY2KsHgRnuAZpmVLJem4pV7")
-(def expected-difficulty 10)
 
 ;; ── DER ─────────────────────────────────────────────────────────────────────
 
@@ -145,8 +105,6 @@
 ;; ── admission ───────────────────────────────────────────────────────────────
 
 (defn- verifier [answer] (reify p/IVerifier (-verify [_ _ _ _ _] answer)))
-
-(def chain [leaf-der ca-der])
 
 (deftest a-real-chain-is-admitted
   (let [r (ident/admit-chain chain {:verifier (verifier true)})]

@@ -45,3 +45,22 @@
   (-put [this path bytes])
   (-delete [this path])
   (-exists? [this path]))
+
+(defprotocol IKeyMaterial
+  "Key generation, signing and entropy — the write half of `IVerifier`.
+
+  Minting an identity needs three things this library cannot invent: a key
+  pair that did not exist a moment ago, a signature over bytes it assembled,
+  and 128 random bits for a serial number. Randomness in particular is worth
+  keeping behind a seam rather than reaching for a global: the proof of work
+  is only work if the keys are unpredictable, and a test that wants a
+  deterministic identity should have to say so explicitly rather than get one
+  by accident.
+
+  `-generate-keypair` returns `{:private <opaque> :public-spki <bytes>}`. The
+  private half is whatever the host wants it to be and is never inspected
+  here; the public half is a DER SubjectPublicKeyInfo, which is what a
+  certificate carries and what a node id is derived from."
+  (-generate-keypair [this])
+  (-sign [this private-key algorithm data])
+  (-random-bytes [this n]))

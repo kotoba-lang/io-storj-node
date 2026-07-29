@@ -73,3 +73,39 @@ jobs:
               exit 1
             fi
           done
+
+  minting:
+    # The one direction the other jobs cannot check. Everywhere else the
+    # reference implementation produces bytes and the .cljc asserts it reads
+    # them the same way; here the .cljc produces a certificate chain and
+    # storj.io/common is asked to accept it. Reading a certificate correctly
+    # is not evidence that one can be written.
+    #
+    # Both runtimes mint, because the library is shared and the crypto under
+    # it is not — a JVM KeyPairGenerator on one side and Node's OpenSSL
+    # bindings on the other, and Storj has to accept either.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - run: npm install
+      - run: npm install -g nbb
+      - name: Mint on the JVM and let Storj judge it
+        run: |
+          set -euo pipefail
+          clojure -M:mint testdata/minted.edn 16
+          (cd testdata && go run verify_minted.go -in minted.edn)
+      - name: Mint on nbb and let Storj judge it
+        run: |
+          set -euo pipefail
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/mint_identity.cljc \
+            testdata/minted-cljs.edn 16
+          (cd testdata && go run verify_minted.go -in minted-cljs.edn)

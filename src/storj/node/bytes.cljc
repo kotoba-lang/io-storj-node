@@ -12,7 +12,8 @@
   A second implementation of SHA-256 would have been the alternative, and this
   workspace has just finished paying for six independent implementations of
   AWS SigV4 (ADR-2607254100). One adapter is not a duplicate."
-  (:require [multiformats.core :as mf]))
+  (:require [multiformats.core :as mf]
+            #?(:cljs ["@noble/hashes/legacy.js" :as noble-legacy])))
 
 (defn ->ints
   "Any byte container → a vector of unsigned ints 0-255."
@@ -28,6 +29,18 @@
   [ints]
   #?(:clj  (byte-array (map unchecked-byte ints))
      :cljs (js/Uint8Array.from (into-array ints))))
+
+(defn sha1
+  "SHA-1, for the one place X.509 still requires it.
+
+  Not a security primitive here and not used as one: a subjectKeyIdentifier
+  is a lookup hint, and RFC 5280 fixes it as SHA-1 of the public key bits.
+  Substituting something stronger would produce a certificate that differs
+  from every other Storj certificate in a field nobody checks."
+  [b]
+  (->ints #?(:clj (.digest (java.security.MessageDigest/getInstance "SHA-1")
+                           (->native (->ints b)))
+             :cljs ((.-sha1 noble-legacy) (->native (->ints b))))))
 
 (defn sha256
   "SHA-256 of a byte vector, as a byte vector."
