@@ -32,6 +32,9 @@
   :mint {:extra-paths ["scripts"]
          :main-opts ["-m" "mint-identity"]}
 
+  :tls-peer {:extra-paths ["scripts"]
+             :main-opts ["-m" "tls-peer"]}
+
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
          :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
                      "--fail-level" "error"]}}}

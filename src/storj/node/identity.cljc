@@ -158,8 +158,13 @@
 
 ;; ── admission ────────────────────────────────────────────────────────────────
 
-(defn- signed-by?
+(defn signed-by?
   "Whether `cert` carries a valid signature from `signer`'s key.
+
+  Public because the CA whitelist in `storj.node.tls` asks the same question
+  of a different pair — did *this* authority sign that peer's CA — and a
+  second implementation of it would be a second chance to pair the algorithm
+  with the wrong key.
 
   The algorithm travels with the signed certificate, and the key with the
   signer — which is the pairing `verifyCertSignature` uses, and the reason

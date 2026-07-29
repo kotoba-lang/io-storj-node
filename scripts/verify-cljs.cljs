@@ -26,7 +26,8 @@
             [storj.node.orders-test]
             [storj.node.pb-test]
             [storj.node.pem-test]
-            [storj.node.piece-test]))
+            [storj.node.piece-test]
+            [storj.node.tls-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
   (println)
@@ -43,4 +44,5 @@
              'storj.node.orders-test
              'storj.node.pb-test
              'storj.node.pem-test
-             'storj.node.piece-test)
+             'storj.node.piece-test
+             'storj.node.tls-test)
