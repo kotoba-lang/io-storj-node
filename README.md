@@ -92,19 +92,22 @@ were both implemented and missing.
 
 *The node cannot store or serve a piece.*
 
-- **`Upload` and `Download`.** These are the node's actual job and they are
-  **streaming** rpcs; `drpc.client` and `drpc.server` describe unary calls and
-  stop. `storj.node.orders/admit` decides whether to honour an order limit and
-  nothing calls it from a request, because no such request can arrive.
+- **`Upload` and `Download`.** These are the node's actual job. The transport
+  under them exists now — `kotoba-lang/drpc` grew streams — and nothing here
+  uses it: there is no `PieceUploadRequest` schema, no handler, and
+  `storj.node.orders/admit` decides whether to honour an order limit while
+  nothing calls it from a request.
 
-*The transport is unary only.*
+*The transport can do more than this repo asks of it.*
 
-- **Streaming rpcs.** `Upload`, `Download`, `SettlementWithWindow` and
-  `RetainBig` are streams. Open, send, receive, close are all missing.
+`drpc` has streams and multiplexing; `storj.node.host.rpc` uses neither.
+
+- **No streaming call is made or served here.** `drpc.session/begin-stream`
+  and `drpc.server`'s per-message delivery exist and nothing in this repo
+  calls them.
 - **One call at a time per connection.** `drpc.session` dispatches answers to
-  the call that asked, and `storj.node.host.rpc` does not use it — it still
-  reads one call's answer off a socket directly. The decision exists; the
-  wiring does not.
+  the call that asked, and `storj.node.host.rpc` still reads one call's answer
+  off a socket directly. The decision exists; the wiring does not.
 
 *Nothing is stored.*
 
