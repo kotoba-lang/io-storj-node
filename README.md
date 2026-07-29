@@ -26,6 +26,7 @@ Storj a node is.
 | `storj.node.host.keys` | The reference `IKeyMaterial` — key generation, signing, entropy. |
 | `storj.node.host.tls` | Sockets. The one namespace here that decides nothing. |
 | `storj.node.contact` | Check-in — the first thing a node says. |
+| `storj.node.retain` | Which pieces to keep, and which to keep anyway. |
 | `storj.node.host.rpc` | A DRPC call on a verified connection — the last joint. |
 | `storj.node.bytes` | The one file that knows which runtime it is on. |
 
@@ -53,6 +54,13 @@ Implemented and tested on two runtimes:
   operator actually needs — almost nobody mints an identity, and everybody who
   has one already has four files. `identity.FullIdentityFromPEM` loads what
   this writes, and what this renders is byte-identical to Go's own PEM.
+- **Retain.** The bloom filter a satellite sends, and the decision under it.
+  Checked against every answer Storj's own filter gives for the same ids —
+  not a round trip, because a filter that decodes is not a filter that agrees.
+  **Absence from the filter is not a reason to delete**: the filter was built
+  at a moment, and a piece accepted after it cannot be in it.
+- **Several calls on one connection.** `drpc.session` dispatches answers to
+  the call that asked.
 - **Check-in.** `/node.Node/CheckIn`, byte-identical to `pb.Marshal`, and the
   response read as what it actually says: `ping_node_success` is the satellite
   reporting whether it could dial *back*, so a call can succeed while the
@@ -75,8 +83,11 @@ Implemented and tested on two runtimes:
   several calls over one connection and needs a reader that dispatches packets
   to whichever call is waiting. That is a scheduler, and writing one before
   there is a second caller would be guessing.
-- **Settlement, retain and graceful exit.** Check-in is implemented; the rest
-  of what a node says is not.
+- **Settlement and graceful exit.** `SettlementWithWindow` is a *streaming*
+  rpc, and `drpc.session` handles unary calls only; graceful exit is several
+  rpcs on top of that. Both are transport work before they are protocol work.
+- **Actually deleting anything.** `storj.node.retain` decides; `IBlobStore`
+  would do it, and nothing wires them together.
 - **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
   collection bloom filters, graceful exit.
 - **Streaming.** `IBlobStore` moves whole blobs; a real node streams and
