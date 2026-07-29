@@ -51,9 +51,17 @@
 
 (def signature-algorithms
   "The signature OIDs a Storj chain uses. ECDSA with SHA-256 is what
-  `pkcrypto.GeneratePrivateKey` produces; RSA appears in older identities."
-  {"1.2.840.10045.4.3.2" :ecdsa-sha256
-   "1.2.840.113549.1.1.11" :rsa-sha256})
+  `pkcrypto.GeneratePrivateKey` produces; RSA appears in older identities.
+
+  `sha256WithRSAEncryption` is PKCS#1 v1.5, and is named so here because
+  Storj signs *messages* with the same keys under PSS. The two are not
+  interchangeable and a verifier has to be told which one it is being asked
+  about — see `storj.node.host.verify`. Certificates signed with RSASSA-PSS
+  (`1.2.840.113549.1.1.10`) are deliberately absent: they would arrive with
+  parameters this does not read, and `admit-chain` refusing an algorithm it
+  cannot name is the safe half of that."
+  {"1.2.840.10045.4.3.2"   :ecdsa-sha256
+   "1.2.840.113549.1.1.11" :rsa-pkcs1-sha256})
 
 (defn- fail [msg data]
   (throw (ex-info (str "storj.node.identity: " msg) data)))

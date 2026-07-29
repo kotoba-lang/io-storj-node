@@ -9,9 +9,16 @@
 ;; checksum on every node ID is computed by different code than the JVM job
 ;; exercised.
 ;;
+;; The verifier is the sharpest case: the JVM reaches ECDSA, RSA-PSS and
+;; ed25519 through `java.security` and this side reaches them through Node's
+;; OpenSSL bindings. Two implementations of the same four schemes, asked the
+;; same questions about the same bytes, is the only way to find out they
+;; disagree before a peer does.
+;;
 ;;   nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
 (ns verify-cljs
   (:require [clojure.test :as t]
+            [storj.node.host.verify-test]
             [storj.node.id-test]
             [storj.node.identity-test]
             [storj.node.orders-test]
@@ -25,7 +32,8 @@
     (do (println "FAILED on the ClojureScript path")
         (js/process.exit 1))))
 
-(t/run-tests 'storj.node.id-test
+(t/run-tests 'storj.node.host.verify-test
+             'storj.node.id-test
              'storj.node.identity-test
              'storj.node.orders-test
              'storj.node.pb-test

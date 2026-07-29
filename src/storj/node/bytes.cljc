@@ -19,7 +19,13 @@
   [b]
   (mapv #(bit-and (int %) 0xff) (seq b)))
 
-(defn- ->native [ints]
+(defn ->native
+  "A vector of unsigned ints → the byte container this runtime's APIs take.
+
+  Public because `storj.node.host.verify` needs the same crossing, and a
+  second definition of how bytes leave this library would be a second place
+  for the two runtimes to start disagreeing."
+  [ints]
   #?(:clj  (byte-array (map unchecked-byte ints))
      :cljs (js/Uint8Array.from (into-array ints))))
 

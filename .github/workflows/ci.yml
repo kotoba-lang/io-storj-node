@@ -58,6 +58,15 @@ jobs:
           #    whitespace are stripped so a vector split across a (str ...)
           #    still matches.
           (cd testdata && go run gen_identity.go -verify)
+          # 3. and the recorded signatures are still valid per Storj's own
+          #    code, and are still the ones the verifier tests assert
+          (cd testdata && go run gen_sigs.go -verify)
+          for h in $(grep -o '"[0-9a-f]\{16,\}"' testdata/sigs.edn | tr -d '"'); do
+            if ! tr -d ' "\n' < test/storj/node/host/verify_test.cljc | grep -q "$h"; then
+              echo "recorded signature not asserted in verify_test.cljc: $h"
+              exit 1
+            fi
+          done
           for h in $(grep -o '"[0-9a-f]\{16,\}"' /tmp/vectors.edn | tr -d '"'); do
             if ! tr -d ' "\n' < test/storj/node/pb_test.cljc | grep -q "$h"; then
               echo "vector not asserted anywhere in pb_test.cljc: $h"
