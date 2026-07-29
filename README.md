@@ -76,22 +76,53 @@ Implemented and tested on two runtimes:
   PSS (messages) — checked against signatures Storj's own code produced, on
   both runtimes.
 
-**Not implemented.** A node built on this would still need all of it:
+**Not implemented.** A node built on this would still need all of it. The
+list below is what is actually absent, checked against the source rather than
+remembered — an earlier version of this section claimed check-in and retain
+were both implemented and missing.
 
-- **More than one call at a time.** `storj.node.host.rpc/call` runs one unary
-  call on a stream the caller names. DRPC multiplexes; a real node runs
-  several calls over one connection and needs a reader that dispatches packets
-  to whichever call is waiting. That is a scheduler, and writing one before
-  there is a second caller would be guessing.
-- **Settlement and graceful exit.** `SettlementWithWindow` is a *streaming*
-  rpc, and `drpc.session` handles unary calls only; graceful exit is several
-  rpcs on top of that. Both are transport work before they are protocol work.
-- **Actually deleting anything.** `storj.node.retain` decides; `IBlobStore`
-  would do it, and nothing wires them together.
-- **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
-  collection bloom filters, graceful exit.
-- **Streaming.** `IBlobStore` moves whole blobs; a real node streams and
-  enforces the limit as it goes.
+*The node cannot be a server.*
+
+- **No DRPC server side at all.** `drpc.client` is a client; nothing routes an
+  incoming `Invoke` to a handler. `storj.node.host.tls/listen` accepts and
+  verifies a peer and then has nowhere to send what it says. A storage node
+  spends most of its life as a server, so this is the largest single gap.
+- **The piecestore rpcs** — `Upload`, `Download`, `Delete`, `Exists`. This is
+  the node's actual job. `storj.node.orders/admit` decides whether to honour
+  an order limit and nothing calls it from a request.
+- **`PingNode`**, which the satellite calls back on the node during check-in.
+  Check-in works because a Go peer answered; a real satellite would dial back
+  and find nobody home.
+
+*The transport is unary only.*
+
+- **Streaming rpcs.** `SettlementWithWindow` and `RetainBig` are streams;
+  `drpc.client` describes a unary call and stops. Open, send, receive, close
+  are all missing.
+- **One call at a time per connection.** `drpc.session` dispatches answers to
+  the call that asked, and `storj.node.host.rpc` does not use it — it still
+  reads one call's answer off a socket directly. The decision exists; the
+  wiring does not.
+
+*Nothing is stored.*
+
+- **`IBlobStore` has no implementation.** It is a protocol with three methods
+  and zero callers that write anything to a disk.
+- **No streaming storage.** `IBlobStore` moves whole blobs; a real node
+  streams and enforces the order limit as it goes — `within-limit?` exists and
+  nothing calls it.
+- **Nothing deletes.** `storj.node.retain` decides which pieces may go and is
+  not wired to anything that removes them.
+- **No piece expiration and no space accounting.** `free_disk` in a check-in
+  is whatever the caller passes in.
+
+*And the rest of the protocol.*
+
+- **Settlement** (`SettlementWithWindow`) — how a node is paid — and
+  **graceful exit**.
+- **Revocation.** `2.999.1.2` is named in `storj.node.identity` and never
+  read. A revoked peer certificate is admitted.
+- **Noise and QUIC**, the newer transports.
 - **The uplink side entirely** — erasure coding, encryption, segment
   metadata. That asymmetry is not an oversight: a node stores opaque shares
   and never decodes anything, which is exactly why the node side fits in a
