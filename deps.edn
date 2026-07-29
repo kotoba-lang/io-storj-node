@@ -14,7 +14,9 @@
  :deps {io.github.kotoba-lang/proto
         {:git/sha "0eba39ede385ddf6894d5a099515064cf919aee8"}
         io.github.kotoba-lang/io-multiformats
-        {:git/sha "310724803db65840f00d2d98d7887f2b6a512bd3"}}
+        {:git/sha "310724803db65840f00d2d98d7887f2b6a512bd3"}
+        io.github.kotoba-lang/drpc
+        {:git/sha "fbb8e04626679524948c608d487aed207f3d0c13"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner

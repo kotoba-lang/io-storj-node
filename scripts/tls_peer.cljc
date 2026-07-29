@@ -4,6 +4,8 @@
 
       clojure -M:tls-peer serve /tmp/id-a 19443
       clojure -M:tls-peer dial  /tmp/id-b 127.0.0.1:19443 <expected-hex>
+      clojure -M:tls-peer call  /tmp/id-b 127.0.0.1:19443 <expected-hex> \\
+        /echo.Echo/Echo hello
       nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/tls_peer.cljc \\
         dial /tmp/id-b 127.0.0.1:19443 <expected-hex>
 
@@ -14,7 +16,9 @@
   This is a test harness, not part of the library: nothing under `src/`
   requires it, and `scripts/` is not on `:paths`."
   (:require [clojure.string :as str]
+            [drpc.client :as drpc]
             [storj.node.bytes :as b]
+            [storj.node.host.rpc :as rpc]
             [storj.node.host.keys :as hk]
             [storj.node.host.tls :as htls]
             [storj.node.identity :as ident]
@@ -146,11 +150,55 @@
                      (println (str "FAIL " (or (some-> e .-message) (str e))))
                      (js/process.exit 1)))))))
 
-(defn run [[mode dir arg expect]]
+(defn- report-call [result rpc-name]
+  (cond
+    (:message result)
+    (do (println (str "response " (drpc/utf8-string (:message result))))
+        #?(:clj (System/exit 0) :cljs (js/process.exit 0)))
+
+    (:error result)
+    (do (println (str "FAIL error " (get-in result [:error :code])
+                      " " (get-in result [:error :message])))
+        #?(:clj (System/exit 1) :cljs (js/process.exit 1)))
+
+    :else
+    (do (println (str "FAIL " rpc-name " closed with no answer"))
+        #?(:clj (System/exit 1) :cljs (js/process.exit 1)))))
+
+(defn call
+  "Dial over TLS, verify the peer, then make one DRPC call on that connection.
+
+  The whole stack in one command: mutual TLS with Storj's rules, the node id
+  checked against what was asked for, and a unary call on the socket that came
+  out of it."
+  [dir addr expect rpc-name payload]
+  (let [identity (load-identity dir)
+        [host port] (str/split addr #":")
+        opts {:host host :port #?(:clj (parse-long port) :cljs (js/parseInt port 10))
+              :identity identity
+              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))}
+        call-opts {:rpc rpc-name :request (drpc/ascii-bytes payload)}]
+    #?(:clj
+       (let [c (htls/connect opts)]
+         (report (:peer c) expect)
+         (report-call (rpc/call (:socket c) call-opts) rpc-name))
+       :cljs
+       (-> (htls/connect opts)
+           (.then (fn [c]
+                    (report (:peer c) expect)
+                    (-> (rpc/call (:socket c) call-opts)
+                        (.then #(report-call % rpc-name)))))
+           (.catch (fn [e]
+                     (println (str "FAIL " (or (some-> e .-message) (str e))))
+                     (js/process.exit 1)))))))
+
+(defn run [[mode dir arg expect rpc-name payload]]
   (case mode
     "serve" (serve dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     "dial"  (dial dir arg expect)
-    (do (println "usage: serve <dir> <port> | dial <dir> <host:port> [expect-hex]")
+    "call"  (call dir arg expect rpc-name payload)
+    (do (println (str "usage: serve <dir> <port> | dial <dir> <host:port> [expect-hex]"
+                      " | call <dir> <host:port> <expect-hex> <rpc> <payload>"))
         #?(:clj (System/exit 1) :cljs (js/process.exit 1)))))
 
 #?(:clj (defn -main [& args] (run args)))

@@ -25,6 +25,7 @@ Storj a node is.
 | `storj.node.host.verify` | The reference `IVerifier` — the four schemes Storj presents. |
 | `storj.node.host.keys` | The reference `IKeyMaterial` — key generation, signing, entropy. |
 | `storj.node.host.tls` | Sockets. The one namespace here that decides nothing. |
+| `storj.node.host.rpc` | A DRPC call on a verified connection — the last joint. |
 | `storj.node.bytes` | The one file that knows which runtime it is on. |
 
 ## Scope — read this before using it
@@ -63,10 +64,13 @@ Implemented and tested on two runtimes:
 
 **Not implemented.** A node built on this would still need all of it:
 
-- **Speaking DRPC over the connection.** The framing lives in
-  [`kotoba-lang/drpc`](https://github.com/kotoba-lang/drpc) and the connection
-  now exists, but nothing joins them: `storj.node.host.tls` hands back a
-  verified socket and stops.
+- **More than one call at a time.** `storj.node.host.rpc/call` runs one unary
+  call on a stream the caller names. DRPC multiplexes; a real node runs
+  several calls over one connection and needs a reader that dispatches packets
+  to whichever call is waiting. That is a scheduler, and writing one before
+  there is a second caller would be guessing.
+- **The RPCs themselves** — check-in, settlement, retain, graceful exit. The
+  transport under them now works; what they say does not exist yet.
 - **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
   collection bloom filters, graceful exit.
 - **Streaming.** `IBlobStore` moves whole blobs; a real node streams and
@@ -120,6 +124,9 @@ So the expected values come from elsewhere:
   greeting exchanged afterwards is not decoration: on TLS 1.3 a client that
   hangs up right after its own Finished leaves the server reporting EOF while
   the client reports success, which is what happened the first time this ran.
+  Its last step makes a **DRPC call** on that connection, answered by a server
+  built from `tlsopts` *and* `drpcserver` — every step a real node takes
+  before it says anything.
 - **Byte-identical reconstruction.** Stronger still, and deterministic: given
   the serial, key and extensions of the fixture's real certificate,
   `storj.node.certificate` rebuilds its signed body and the result is equal,
@@ -223,10 +230,13 @@ cd testdata && go run gen_vectors.go                         # regenerate vector
 cd testdata && go run gen_sigs.go -verify                    # recheck signatures
 clojure -M:mint /tmp/identity 16                              # mint an identity
 clojure -M:tls-peer serve /tmp/identity 19443                # and speak TLS with it
+clojure -M:tls-peer call /tmp/identity 127.0.0.1:19443 \
+  <node-id-hex> /echo.Echo/Echo hello                        # TLS + DRPC in one
 cd testdata && go run verify_minted.go -dir /tmp/identity    # and let Storj load it
 cd testdata && go run gen_identity.go -pem                   # rebuild identity.cert
 ```
 
 `testdata/` is a vector generator, not a dependency: nothing under `src/`
 links Go, and the library's own dependencies are two `.cljc` libraries
-(`proto` for the wire codec, `io-multiformats` for base58/base32/SHA-256).
+(`proto` for the wire codec, `io-multiformats` for base58/base32/SHA-256,
+`drpc` for the framing and the shape of a unary call).

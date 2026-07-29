@@ -2,7 +2,10 @@ module storjnodevectors
 
 go 1.25.0
 
-require storj.io/common v0.0.0-20260629224719-ba1bff0a7846
+require (
+	storj.io/common v0.0.0-20260629224719-ba1bff0a7846
+	storj.io/drpc v1.0.0
+)
 
 require (
 	github.com/gogo/protobuf v1.3.2 // indirect
@@ -12,5 +15,4 @@ require (
 	github.com/zeebo/errs v1.3.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/sys v0.41.1-0.20260303015103-eaaaaee1dc1a // indirect
-	storj.io/drpc v0.0.35-0.20250513201419-f7819ea69b55 // indirect
 )

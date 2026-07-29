@@ -62,5 +62,5 @@ gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
 storj.io/common v0.0.0-20260629224719-ba1bff0a7846 h1:TRtVGWm/Y4KAi4coWMxVpydPvBQKYVhkKMar7wu9Zow=
 storj.io/common v0.0.0-20260629224719-ba1bff0a7846/go.mod h1:1GZnCZNGbzBzaqhG0cUypQeLfNhNIeNY9JVMMiCF14M=
-storj.io/drpc v0.0.35-0.20250513201419-f7819ea69b55 h1:8OE12DvUnB9lfZcHe7IDGsuhjrY9GBAr964PVHmhsro=
-storj.io/drpc v0.0.35-0.20250513201419-f7819ea69b55/go.mod h1:Y9LZaa8esL1PW2IDMqJE7CFSNq7d5bQ3RI7mGPtmKMg=
+storj.io/drpc v1.0.0 h1:1Xf1KCXXbV1viIfN56eqdJ3cNwpAL7OKwQkpS6ksing=
+storj.io/drpc v1.0.0/go.mod h1:Y9LZaa8esL1PW2IDMqJE7CFSNq7d5bQ3RI7mGPtmKMg=
