@@ -25,6 +25,7 @@
             [storj.node.mint-test]
             [storj.node.orders-test]
             [storj.node.pb-test]
+            [storj.node.pem-test]
             [storj.node.piece-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
@@ -41,4 +42,5 @@
              'storj.node.mint-test
              'storj.node.orders-test
              'storj.node.pb-test
+             'storj.node.pem-test
              'storj.node.piece-test)

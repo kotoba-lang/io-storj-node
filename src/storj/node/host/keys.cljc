@@ -13,8 +13,8 @@
   (:require [storj.node.bytes :as b]
             [storj.node.protocols :as p]
             #?(:cljs ["node:crypto" :as crypto]))
-  #?(:clj (:import (java.security KeyPairGenerator SecureRandom Signature)
-                   (java.security.spec ECGenParameterSpec))))
+  #?(:clj (:import (java.security KeyFactory KeyPairGenerator SecureRandom Signature)
+                   (java.security.spec ECGenParameterSpec PKCS8EncodedKeySpec))))
 
 (def curve
   "P-256, which `pkcrypto.GeneratePrivateKey` returns and every current Storj
@@ -64,9 +64,53 @@
   #?(:clj  (let [a (byte-array n)] (.nextBytes secure-random a) (b/->ints a))
      :cljs (b/->ints (.randomBytes crypto n))))
 
+(defn export-private-key
+  "A private key as PKCS#8 DER — what Go writes into `identity.key`."
+  [private-key]
+  #?(:clj  (b/->ints (.getEncoded private-key))
+     :cljs (b/->ints (.export private-key #js {:type "pkcs8" :format "der"}))))
+
+(defn import-private-key
+  "A private key from its DER, in whichever encoding the file carried.
+
+  SEC1 (`EC PRIVATE KEY`) is refused rather than guessed at: neither runtime's
+  importer takes it directly, and wrapping SEC1 into PKCS#8 means writing the
+  curve OID by hand — plausible to get almost right, and wrong in a way that
+  only shows up as a signature nobody accepts. An operator with such a file
+  can convert it with one openssl command, which is a better answer than a
+  conversion nobody has tested."
+  [der encoding]
+  (when-not (= :pkcs8 encoding)
+    (throw (ex-info "storj.node.host.keys: only PKCS#8 keys are imported"
+                    {:encoding encoding
+                     :hint "openssl pkcs8 -topk8 -nocrypt -in old.key -out new.key"})))
+  #?(:clj  (.generatePrivate (KeyFactory/getInstance "EC")
+                             (PKCS8EncodedKeySpec. (b/->native (vec der))))
+     :cljs (.createPrivateKey crypto #js {:key    (b/->native (vec der))
+                                          :format "der"
+                                          :type   "pkcs8"})))
+
+(defn public-key-of
+  "The DER SubjectPublicKeyInfo matching an imported private key.
+
+  A loaded identity has to be able to say which node it is, and that comes
+  from a public key rather than from the file it was read out of."
+  [private-key]
+  #?(:clj
+     (let [spec (.getKeySpec (KeyFactory/getInstance "EC") private-key
+                             java.security.spec.ECPublicKeySpec)]
+       (b/->ints (.getEncoded (.generatePublic (KeyFactory/getInstance "EC") spec))))
+     :cljs
+     (b/->ints (.export (.createPublicKey crypto private-key)
+                        #js {:type "spki" :format "der"}))))
+
 (def key-material
   "An `IKeyMaterial` backed by this runtime's own crypto."
   (reify p/IKeyMaterial
     (-generate-keypair [_] (generate-keypair))
     (-sign [_ private-key algorithm data] (sign algorithm private-key data))
-    (-random-bytes [_ n] (random-bytes n))))
+    (-random-bytes [_ n] (random-bytes n))
+
+    p/IKeyStorage
+    (-export-private-key [_ private-key] (export-private-key private-key))
+    (-import-private-key [_ der encoding] (import-private-key der encoding))))

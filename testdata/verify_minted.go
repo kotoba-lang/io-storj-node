@@ -8,19 +8,23 @@
 // its own writer proves nothing, and reading a certificate correctly is not
 // evidence that one can be written.
 //
-//	go run verify_minted.go -in minted.edn
+//	go run verify_minted.go -dir /tmp/identity-jvm
 package main
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/x509"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 
 	"storj.io/common/identity"
 	"storj.io/common/peertls"
+	"storj.io/common/pkcrypto"
 	"storj.io/common/storj"
 )
 
@@ -48,6 +52,14 @@ func mustHex(s string) []byte {
 	return b
 }
 
+func publicOf(key crypto.PrivateKey) crypto.PublicKey {
+	pub, err := pkcrypto.PublicKeyFromPrivate(key)
+	if err != nil {
+		panic(err)
+	}
+	return pub
+}
+
 var failed bool
 
 func check(what string, ok bool) {
@@ -60,28 +72,57 @@ func check(what string, ok bool) {
 }
 
 func main() {
-	in := flag.String("in", "minted.edn", "identity produced by storj.node.mint")
+	dir := flag.String("dir", "/tmp/storj-identity", "identity directory produced by storj.node.mint")
 	flag.Parse()
 
-	raw, err := os.ReadFile(*in)
+	raw, err := os.ReadFile(filepath.Join(*dir, "minted.edn"))
 	if err != nil {
 		panic(err)
 	}
 	src := string(raw)
 
-	// 1. the certificates parse at all — Go's X.509 parser is strict about
-	//    lengths, tag classes and the shape of every extension
-	caCert, err := x509.ParseCertificate(mustHex(mustField(src, "ca-der")))
+	// 1. the files load through the same API a node's own tooling uses —
+	//    PEM, then X.509, then the identity layer. This is the whole point:
+	//    every other vector in this repo has Go produce bytes for the .cljc
+	//    to read, and this one has the .cljc produce files for Go to load.
+	chainPEM, err := os.ReadFile(filepath.Join(*dir, "identity.cert"))
 	if err != nil {
-		fmt.Printf("FAIL the CA certificate does not parse: %v\n", err)
+		panic(err)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(*dir, "identity.key"))
+	if err != nil {
+		panic(err)
+	}
+	full, err := identity.FullIdentityFromPEM(chainPEM, keyPEM)
+	if err != nil {
+		fmt.Printf("FAIL FullIdentityFromPEM: %v\n", err)
 		os.Exit(1)
 	}
-	leafCert, err := x509.ParseCertificate(mustHex(mustField(src, "leaf-der")))
+	check("identity.cert and identity.key load as a FullIdentity", true)
+
+	caCert, leafCert := full.CA, full.Leaf
+
+	// the CA files are a separate pair, loaded the way `identity create` wrote
+	// them — and the key in ca.key has to be the one that signed the CA cert
+	caFull, err := identity.FullCAConfig{
+		CertPath: filepath.Join(*dir, "ca.cert"),
+		KeyPath:  filepath.Join(*dir, "ca.key"),
+	}.Load()
 	if err != nil {
-		fmt.Printf("FAIL the leaf certificate does not parse: %v\n", err)
+		fmt.Printf("FAIL loading ca.cert and ca.key: %v\n", err)
 		os.Exit(1)
 	}
-	check("both certificates parse", true)
+	check("ca.cert and ca.key load as a certificate authority", true)
+	check("the CA in both files is the same certificate",
+		bytes.Equal(caFull.Cert.Raw, caCert.Raw))
+	check("the id from the CA files matches the id from the identity files",
+		caFull.ID == full.ID)
+
+	// 2. the private keys really are the keys those certificates carry
+	check("identity.key is the leaf's key",
+		pkcrypto.PublicKeyEqual(publicOf(full.Key), leafCert.PublicKey))
+	check("ca.key is the CA's key",
+		pkcrypto.PublicKeyEqual(publicOf(caFull.Key), caCert.PublicKey))
 
 	// 2. the signatures verify, including the CA's over itself
 	check("the CA signed itself",
@@ -103,6 +144,7 @@ func main() {
 		os.Exit(1)
 	}
 	check("the node id matches", hex.EncodeToString(id.Bytes()) == mustField(src, "node-id"))
+	check("FullIdentityFromPEM agreed about the id", full.ID == id)
 
 	d, err := id.Difficulty()
 	if err != nil {

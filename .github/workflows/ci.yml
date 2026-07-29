@@ -61,6 +61,11 @@ jobs:
           # 3. and the recorded signatures are still valid per Storj's own
           #    code, and are still the ones the verifier tests assert
           (cd testdata && go run gen_sigs.go -verify)
+          # 4. identity.cert is Go's PEM for the recorded certificates.
+          #    Unlike the identity itself this is deterministic, so it is
+          #    rebuilt and diffed rather than merely re-verified.
+          (cd testdata && go run gen_identity.go -pem)
+          git diff --exit-code testdata/identity.cert
           for h in $(grep -o '"[0-9a-f]\{16,\}"' testdata/sigs.edn | tr -d '"'); do
             if ! tr -d ' "\n' < test/storj/node/host/verify_test.cljc | grep -q "$h"; then
               echo "recorded signature not asserted in verify_test.cljc: $h"
@@ -77,9 +82,10 @@ jobs:
   minting:
     # The one direction the other jobs cannot check. Everywhere else the
     # reference implementation produces bytes and the .cljc asserts it reads
-    # them the same way; here the .cljc produces a certificate chain and
-    # storj.io/common is asked to accept it. Reading a certificate correctly
-    # is not evidence that one can be written.
+    # them the same way; here the .cljc writes a whole identity directory —
+    # ca.cert, ca.key, identity.cert, identity.key — and storj.io/common is
+    # asked to load it through the same API a node's own tooling uses.
+    # Reading a certificate correctly is not evidence that one can be written.
     #
     # Both runtimes mint, because the library is shared and the crypto under
     # it is not — a JVM KeyPairGenerator on one side and Node's OpenSSL
@@ -98,14 +104,14 @@ jobs:
           cli: latest
       - run: npm install
       - run: npm install -g nbb
-      - name: Mint on the JVM and let Storj judge it
+      - name: Mint on the JVM and let Storj load it
         run: |
           set -euo pipefail
-          clojure -M:mint testdata/minted.edn 16
-          (cd testdata && go run verify_minted.go -in minted.edn)
-      - name: Mint on nbb and let Storj judge it
+          clojure -M:mint /tmp/identity-jvm 16
+          (cd testdata && go run verify_minted.go -dir /tmp/identity-jvm)
+      - name: Mint on nbb and let Storj load it
         run: |
           set -euo pipefail
           nbb --classpath "$(clojure -A:cljs -Spath)" scripts/mint_identity.cljc \
-            testdata/minted-cljs.edn 16
-          (cd testdata && go run verify_minted.go -in minted-cljs.edn)
+            /tmp/identity-cljs 16
+          (cd testdata && go run verify_minted.go -dir /tmp/identity-cljs)

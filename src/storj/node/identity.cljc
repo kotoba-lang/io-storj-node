@@ -34,6 +34,7 @@
   (:require [storj.node.bytes :as b]
             [storj.node.der :as der]
             [storj.node.id :as id]
+            [storj.node.pem :as pem]
             [storj.node.protocols :as p]))
 
 (def leaf-index
@@ -244,3 +245,66 @@
      :reasons    problems
      :node-id    nid
      :difficulty diff}))
+
+;; ── identity files ──────────────────────────────────────────────────────────
+
+(def certificate-label "CERTIFICATE")
+
+(def private-key-label
+  "What Go writes: PEM-enveloped PKCS#8. `pkcrypto.WritePrivateKeyPEM`."
+  "PRIVATE KEY")
+
+(def ec-private-key-label
+  "What older identities carry: SEC1, the `openssl ecparam` shape.
+  `PrivateKeyFromPEM` still accepts it, so reading one is not optional."
+  "EC PRIVATE KEY")
+
+(defn chain-pem
+  "A certificate chain as the text of an `identity.cert` file.
+
+  Leaf first, then the CA — `FullIdentity.Chain()` order, which is also the
+  order TLS presents them and the order `admit-chain` expects. A file written
+  the other way round parses fine and names a different node, because the id
+  comes from whichever certificate sits at `ca-index`."
+  [chain]
+  (pem/encode-all (map (fn [der] {:label certificate-label :der der}) chain)))
+
+(defn parse-chain-pem
+  "The certificates in an `identity.cert` or `ca.cert` file, in file order.
+
+  Refuses a file with a non-certificate block rather than filtering it out: a
+  key sitting in a chain file is a mistake worth reporting, not one to route
+  around."
+  [text]
+  (let [blocks (pem/decode-all text)]
+    (when (empty? blocks)
+      (throw (ex-info "storj.node.identity: no PEM blocks in the chain file" {})))
+    (doseq [{:keys [label]} blocks]
+      (when (not= certificate-label label)
+        (throw (ex-info "storj.node.identity: a chain file may only hold certificates"
+                        {:label label}))))
+    (mapv :der blocks)))
+
+(defn parse-private-key-pem
+  "The DER of a private key file, with which encoding it turned out to be.
+
+  Returns `{:der bytes :encoding :pkcs8 | :sec1}`. The caller has to know:
+  a runtime's key importer takes one or the other and will not tell them
+  apart, so silently returning bare bytes here would move the mistake to
+  wherever the key is finally used."
+  [text]
+  (let [blocks (pem/decode-all text)]
+    (when (not= 1 (count blocks))
+      (throw (ex-info "storj.node.identity: expected exactly one key in the file"
+                      {:found (count blocks) :labels (mapv :label blocks)})))
+    (let [{:keys [label der]} (first blocks)]
+      (condp = label
+        private-key-label    {:der der :encoding :pkcs8}
+        ec-private-key-label {:der der :encoding :sec1}
+        (throw (ex-info "storj.node.identity: not a private key block"
+                        {:label label}))))))
+
+(defn private-key-pem
+  "A PKCS#8 private key as the text of an `identity.key` file."
+  [pkcs8-der]
+  (pem/encode private-key-label pkcs8-der))
