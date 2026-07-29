@@ -30,6 +30,7 @@
             [storj.node.pem-test]
             [storj.node.piece-test]
             [storj.node.retain-test]
+            [storj.node.service-test]
             [storj.node.tls-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
@@ -51,4 +52,5 @@
              'storj.node.pem-test
              'storj.node.piece-test
              'storj.node.retain-test
+             'storj.node.service-test
              'storj.node.tls-test)

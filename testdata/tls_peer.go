@@ -32,6 +32,7 @@ import (
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/storj"
 	"storj.io/drpc"
+	"storj.io/drpc/drpcconn"
 	"storj.io/drpc/drpcserver"
 )
 
@@ -81,6 +82,8 @@ func main() {
 	dir := flag.String("identity", "", "identity directory")
 	port := flag.Int("port", 0, "port to listen on, 0 for any")
 	expect := flag.String("expect", "", "hex node id the peer must present")
+	rpcName := flag.String("rpc", "", "with -dial, make this rpc over the connection")
+	payload := flag.String("payload", "", "hex request body for -rpc")
 	flag.Parse()
 
 	if *dir == "" {
@@ -95,6 +98,8 @@ func main() {
 		doServeDRPC(opts, *port)
 	case *serve:
 		doServe(opts, *port, *expect)
+	case *dial != "" && *rpcName != "":
+		doRPC(opts, *dial, *expect, *rpcName, *payload)
 	case *dial != "":
 		doDial(opts, *dial, *expect)
 	default:
@@ -153,6 +158,21 @@ func doServe(opts *tlsopts.Options, port int, expect string) {
 // through. No generated code: drpc.Handler is one method and drpc.Encoding is
 // two, so a byte-passing encoding answers a unary call without protoc.
 type raw struct{ data []byte }
+
+// raw2 and rawEncoding2 are the client-side pair; the server-side ones above
+// are used by the handler and keeping them separate avoids a name collision
+// that would make the two directions look like one.
+type raw2 struct{ data []byte }
+
+type rawEncoding2 struct{}
+
+func (rawEncoding2) Marshal(msg drpc.Message) ([]byte, error) { return msg.(*raw2).data, nil }
+
+func (rawEncoding2) Unmarshal(buf []byte, msg drpc.Message) error {
+	m := msg.(*raw2)
+	m.data = append([]byte(nil), buf...)
+	return nil
+}
 
 type rawEncoding struct{}
 
@@ -266,6 +286,51 @@ func doDial(opts *tlsopts.Options, addr, expect string) {
 		os.Exit(1)
 	}
 	fmt.Println("ok   application data flowed both ways")
+}
+
+// doRPC is the whole stack from the reference side: Storj mutual TLS, then a
+// real drpcconn.Conn making a real call. A node that answers this has been
+// asked a question the way a satellite asks one.
+func doRPC(opts *tlsopts.Options, addr, expect, rpcName, payloadHex string) {
+	var cfg *tls.Config
+	if expect != "" {
+		raw, err := hex.DecodeString(expect)
+		if err != nil {
+			fmt.Printf("FAIL bad -expect: %v\n", err)
+			os.Exit(1)
+		}
+		var id storj.NodeID
+		copy(id[:], raw)
+		cfg = opts.ClientTLSConfig(id)
+	} else {
+		cfg = opts.UnverifiedClientTLSConfig()
+	}
+
+	conn, err := tls.Dial("tcp", addr, cfg)
+	if err != nil {
+		fmt.Printf("FAIL dial: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = conn.Close() }()
+	report(conn.ConnectionState(), "")
+
+	body, err := hex.DecodeString(payloadHex)
+	if err != nil {
+		fmt.Printf("FAIL bad -payload: %v\n", err)
+		os.Exit(1)
+	}
+
+	client := drpcconn.New(conn)
+	defer func() { _ = client.Close() }()
+
+	var out raw2
+	if err := client.Invoke(context.Background(), rpcName, rawEncoding2{},
+		&raw2{data: body}, &out); err != nil {
+		fmt.Printf("FAIL invoke %s: %v\n", rpcName, err)
+		os.Exit(1)
+	}
+	fmt.Printf("ok   %s answered %d bytes\n", rpcName, len(out.data))
+	fmt.Printf("response %s\n", hex.EncodeToString(out.data))
 }
 
 func report(state tls.ConnectionState, expect string) {

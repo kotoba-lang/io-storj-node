@@ -18,6 +18,9 @@
   (:require [clojure.string :as str]
             [drpc.client :as drpc]
             [storj.node.contact :as contact]
+            [storj.node.host.blobs :as blobs]
+            [storj.node.piece :as piece]
+            [storj.node.service :as svc]
             [storj.node.bytes :as b]
             [storj.node.host.rpc :as rpc]
             [storj.node.host.keys :as hk]
@@ -237,12 +240,60 @@
                      (println (str "FAIL " (or (some-> e .-message) (str e))))
                      (js/process.exit 1)))))))
 
+(defn node
+  "Serve the unary surface a satellite asks for, over Storj mutual TLS.
+
+  Seeded with one piece so `Exists` has something to say yes to and something
+  to say no about — a node that holds nothing answers every question the same
+  way, and a test against it proves nothing."
+  [dir port expect]
+  (let [identity (load-identity dir)
+        satellite (vec (repeat 32 1))
+        paths     (fn [id] (piece/blob-path satellite id))
+        held      (mapv (fn [i] (mod (+ 0x11 (* i 7)) 256)) (range 32))
+        store     (blobs/in-memory)
+        state     {:blobs store :paths paths}]
+    (rpc/-put-seed store (paths held))
+    (let [handle (fn [call]
+                   (let [r (svc/handle state call)]
+                     (println (str "rpc " (:rpc call) " -> "
+                                   (if (:error r) (str "error " (:message (:error r)))
+                                       (str (count (:response r)) " bytes"))))
+                     r))]
+      #?(:clj
+         (let [l (htls/listen {:port port :identity identity :verify-opts {}
+                               :on-connection
+                               (fn [{:keys [socket peer]}]
+                                 (report peer expect)
+                                 (rpc/serve-connection socket handle)
+                                 (System/exit 0))
+                               :on-refused
+                               (fn [r] (println (str "FAIL refused: " (pr-str r)))
+                                 (System/exit 1))})]
+           (println (str "listening " (:port l)))
+           (flush)
+           ((:accept l)))
+         :cljs
+         (let [{:keys [server]} (htls/listen
+                                 {:port port :identity identity :verify-opts {}
+                                  :on-connection
+                                  (fn [{:keys [socket peer]}]
+                                    (report peer expect)
+                                    (-> (rpc/serve-connection socket handle)
+                                        (.then (fn [_] (js/process.exit 0)))))
+                                  :on-refused
+                                  (fn [r] (println (str "FAIL refused: " (pr-str r)))
+                                    (js/process.exit 1))})]
+           (.on server "listening"
+                #(println (str "listening " (.-port (.address server))))))))))
+
 (defn run [[mode dir arg expect rpc-name payload]]
   (case mode
     "serve" (serve dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     "dial"  (dial dir arg expect)
     "call"  (call dir arg expect rpc-name payload)
     "check-in" (check-in dir arg expect (or rpc-name "127.0.0.1:28967"))
+    "node"  (node dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     (do (println (str "usage: serve <dir> <port> | dial <dir> <host:port> [expect-hex]"
                       " | call <dir> <host:port> <expect-hex> <rpc> <payload>"))
         #?(:clj (System/exit 1) :cljs (js/process.exit 1)))))

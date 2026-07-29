@@ -268,3 +268,33 @@
   (when-not (zero-timestamp? f)
     (let [inner (w/message-value f)]
       (or (w/varint-value (w/field inner 1)) 0))))
+
+;; ── the unary piecestore surface ────────────────────────────────────────────
+;;
+;; Upload, Download and RetainBig are streams and are not here. What is left
+;; is what a satellite asks a node between transfers.
+
+(def exists-request
+  "piecestore2.proto `ExistsRequest`. `piece_ids` repeats."
+  {1 :piece-ids})
+
+(def exists-response
+  "piecestore2.proto `ExistsResponse`.
+
+  `missing` is a list of **indices into the request**, not piece ids — a node
+  that answered with ids would be answering a different question, and the
+  satellite would read the first varint of an id as an index."
+  {1 :missing})
+
+(def delete-pieces-request
+  "piecestore2.proto `DeletePiecesRequest`."
+  {1 :piece-ids})
+
+(def delete-pieces-response
+  "piecestore2.proto `DeletePiecesResponse`. `unhandled_count` is how many the
+  node did not get to, not how many it deleted."
+  {1 :unhandled-count})
+
+(def retain-request
+  "piecestore2.proto `RetainRequest`."
+  {1 :creation-date 2 :filter 3 :hash-algorithm 4 :hash})
