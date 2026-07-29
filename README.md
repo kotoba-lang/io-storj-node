@@ -25,6 +25,7 @@ Storj a node is.
 | `storj.node.host.verify` | The reference `IVerifier` — the four schemes Storj presents. |
 | `storj.node.host.keys` | The reference `IKeyMaterial` — key generation, signing, entropy. |
 | `storj.node.host.tls` | Sockets. The one namespace here that decides nothing. |
+| `storj.node.contact` | Check-in — the first thing a node says. |
 | `storj.node.host.rpc` | A DRPC call on a verified connection — the last joint. |
 | `storj.node.bytes` | The one file that knows which runtime it is on. |
 
@@ -52,6 +53,11 @@ Implemented and tested on two runtimes:
   operator actually needs — almost nobody mints an identity, and everybody who
   has one already has four files. `identity.FullIdentityFromPEM` loads what
   this writes, and what this renders is byte-identical to Go's own PEM.
+- **Check-in.** `/node.Node/CheckIn`, byte-identical to `pb.Marshal`, and the
+  response read as what it actually says: `ping_node_success` is the satellite
+  reporting whether it could dial *back*, so a call can succeed while the
+  introduction fails. Nothing in a check-in is signed — the mutual TLS
+  underneath already named the node.
 - **Mutual TLS.** Connecting and accepting with Storj's rules: no trusted
   roots, no hostnames, `RequireAnyClientCert`, and
   `storj.node.identity/admit-chain` in the place certificate validation would
@@ -69,8 +75,8 @@ Implemented and tested on two runtimes:
   several calls over one connection and needs a reader that dispatches packets
   to whichever call is waiting. That is a scheduler, and writing one before
   there is a second caller would be guessing.
-- **The RPCs themselves** — check-in, settlement, retain, graceful exit. The
-  transport under them now works; what they say does not exist yet.
+- **Settlement, retain and graceful exit.** Check-in is implemented; the rest
+  of what a node says is not.
 - **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
   collection bloom filters, graceful exit.
 - **Streaming.** `IBlobStore` moves whole blobs; a real node streams and
@@ -126,7 +132,9 @@ So the expected values come from elsewhere:
   the client reports success, which is what happened the first time this ran.
   Its last step makes a **DRPC call** on that connection, answered by a server
   built from `tlsopts` *and* `drpcserver` — every step a real node takes
-  before it says anything.
+  before it says anything, and then **checks in** — a real `CheckInRequest`
+  parsed by `storj.io/common`'s own generated code, and a real
+  `CheckInResponse` read back, on both the accepted and refused paths.
 - **Byte-identical reconstruction.** Stronger still, and deterministic: given
   the serial, key and extensions of the fixture's real certificate,
   `storj.node.certificate` rebuilds its signed body and the result is equal,
@@ -161,6 +169,13 @@ A fourth would have been just as quiet: an OID whose first byte is 80 or
 above encodes a first arc of 2, and dividing by 40 instead — the obvious
 reading — turns Storj's `2.999.2.1` identity-version extension into
 `24.39.2.1`, so every certificate would silently look unversioned.
+
+A sixth was the same trap in a new message. `NodeVersion.timestamp` is
+`(gogoproto.nullable) = false`, so gogo marshals a `time.Time` *value* and a
+zero `time.Time` is still a value — the field goes out even when nothing set
+it. Omitting it produced a `CheckInRequest` eleven bytes shorter than
+`pb.Marshal`'s. The generator that caught it has a comment warning about
+exactly this, written before the mistake was made.
 
 A fifth is the one this repo went looking for rather than tripped over.
 Storj signs *messages* with RSA-PSS and *certificates* with PKCS#1 v1.5 —
@@ -232,6 +247,8 @@ clojure -M:mint /tmp/identity 16                              # mint an identity
 clojure -M:tls-peer serve /tmp/identity 19443                # and speak TLS with it
 clojure -M:tls-peer call /tmp/identity 127.0.0.1:19443 \
   <node-id-hex> /echo.Echo/Echo hello                        # TLS + DRPC in one
+clojure -M:tls-peer check-in /tmp/identity 127.0.0.1:19443 \
+  <node-id-hex> 127.0.0.1:28967                              # and a real check-in
 cd testdata && go run verify_minted.go -dir /tmp/identity    # and let Storj load it
 cd testdata && go run gen_identity.go -pem                   # rebuild identity.cert
 ```

@@ -25,8 +25,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"storj.io/common/identity"
+	"storj.io/common/pb"
 	"storj.io/common/peertls/tlsopts"
 	"storj.io/common/storj"
 	"storj.io/drpc"
@@ -172,6 +174,36 @@ func (echo) HandleRPC(stream drpc.Stream, rpc string) error {
 		return err
 	}
 	fmt.Printf("rpc %s (%d bytes)\n", rpc, len(in.data))
+
+	// The real thing, for the one rpc a node cannot skip: parse the request
+	// with storj.io/common's own generated code and answer with a real
+	// CheckInResponse. A client that gets this back has had its request
+	// understood by a satellite's parser, not merely echoed.
+	if rpc == "/node.Node/CheckIn" {
+		var req pb.CheckInRequest
+		if err := pb.Unmarshal(in.data, &req); err != nil {
+			return err
+		}
+		fmt.Printf("check-in address=%q version=%q free-disk=%d email=%q\n",
+			req.Address, req.Version.Version, req.Capacity.FreeDisk, req.Operator.Email)
+
+		// Refuse when the node claims an address nobody could dial, so the
+		// interesting case is reachable from a test: a call that worked and an
+		// introduction that did not.
+		resp := &pb.CheckInResponse{PingNodeSuccess: true, PingNodeSuccessQuic: true}
+		if req.Address == "" || strings.HasPrefix(req.Address, "0.0.0.0") {
+			resp = &pb.CheckInResponse{
+				PingNodeSuccess:  false,
+				PingErrorMessage: "failed to dial storage node at address " + req.Address,
+			}
+		}
+		out, err := pb.Marshal(resp)
+		if err != nil {
+			return err
+		}
+		return stream.MsgSend(&raw{data: out}, rawEncoding{})
+	}
+
 	out := raw{data: append([]byte(rpc+":"), in.data...)}
 	return stream.MsgSend(&out, rawEncoding{})
 }
