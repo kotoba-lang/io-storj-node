@@ -27,6 +27,8 @@ Storj a node is.
 | `storj.node.host.tls` | Sockets. The one namespace here that decides nothing. |
 | `storj.node.contact` | Check-in — the first thing a node says. |
 | `storj.node.retain` | Which pieces to keep, and which to keep anyway. |
+| `storj.node.service` | What a node answers when it is asked. |
+| `storj.node.host.blobs` | An `IBlobStore` that keeps everything in memory. |
 | `storj.node.host.rpc` | A DRPC call on a verified connection — the last joint. |
 | `storj.node.bytes` | The one file that knows which runtime it is on. |
 
@@ -61,6 +63,13 @@ Implemented and tested on two runtimes:
   at a moment, and a piece accepted after it cannot be in it.
 - **Several calls on one connection.** `drpc.session` dispatches answers to
   the call that asked.
+- **Answering a satellite.** `PingNode`, `Exists`, `Retain`, `DeletePieces`
+  and `RestoreTrash` — the unary surface a satellite asks between transfers.
+  A peer built from Storj's own `tlsopts` and `drpcconn` calls the node over
+  mutual TLS in CI and reads the answer. Three of these read backwards from
+  the obvious guess: `Exists` answers with *indices* rather than piece ids,
+  `DeletePieces` counts what it could **not** do, and `Retain` decides without
+  deleting anything.
 - **Check-in.** `/node.Node/CheckIn`, byte-identical to `pb.Marshal`, and the
   response read as what it actually says: `ping_node_success` is the satellite
   reporting whether it could dial *back*, so a call can succeed while the
@@ -81,24 +90,17 @@ list below is what is actually absent, checked against the source rather than
 remembered — an earlier version of this section claimed check-in and retain
 were both implemented and missing.
 
-*The node cannot be a server.*
+*The node cannot store or serve a piece.*
 
-- **No DRPC server side at all.** `drpc.client` is a client; nothing routes an
-  incoming `Invoke` to a handler. `storj.node.host.tls/listen` accepts and
-  verifies a peer and then has nowhere to send what it says. A storage node
-  spends most of its life as a server, so this is the largest single gap.
-- **The piecestore rpcs** — `Upload`, `Download`, `Delete`, `Exists`. This is
-  the node's actual job. `storj.node.orders/admit` decides whether to honour
-  an order limit and nothing calls it from a request.
-- **`PingNode`**, which the satellite calls back on the node during check-in.
-  Check-in works because a Go peer answered; a real satellite would dial back
-  and find nobody home.
+- **`Upload` and `Download`.** These are the node's actual job and they are
+  **streaming** rpcs; `drpc.client` and `drpc.server` describe unary calls and
+  stop. `storj.node.orders/admit` decides whether to honour an order limit and
+  nothing calls it from a request, because no such request can arrive.
 
 *The transport is unary only.*
 
-- **Streaming rpcs.** `SettlementWithWindow` and `RetainBig` are streams;
-  `drpc.client` describes a unary call and stops. Open, send, receive, close
-  are all missing.
+- **Streaming rpcs.** `Upload`, `Download`, `SettlementWithWindow` and
+  `RetainBig` are streams. Open, send, receive, close are all missing.
 - **One call at a time per connection.** `drpc.session` dispatches answers to
   the call that asked, and `storj.node.host.rpc` does not use it — it still
   reads one call's answer off a socket directly. The decision exists; the
@@ -106,13 +108,17 @@ were both implemented and missing.
 
 *Nothing is stored.*
 
-- **`IBlobStore` has no implementation.** It is a protocol with three methods
-  and zero callers that write anything to a disk.
+- **The only `IBlobStore` forgets everything.**
+  `storj.node.host.blobs/in-memory` exists so `Exists` and `DeletePieces` have
+  something to answer from. Nothing writes to a disk and nothing survives a
+  restart, which is not storage.
 - **No streaming storage.** `IBlobStore` moves whole blobs; a real node
   streams and enforces the order limit as it goes — `within-limit?` exists and
   nothing calls it.
-- **Nothing deletes.** `storj.node.retain` decides which pieces may go and is
-  not wired to anything that removes them.
+- **Nothing acts on a retain filter.** `Retain` decides and hands the decision
+  to a callback; walking every piece a node holds for a satellite is hours of
+  disk and is not scheduled here. `DeletePieces` does delete, because the
+  satellite named those.
 - **No piece expiration and no space accounting.** `free_disk` in a check-in
   is whatever the caller passes in.
 
