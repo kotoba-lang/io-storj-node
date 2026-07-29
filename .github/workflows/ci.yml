@@ -67,6 +67,12 @@ jobs:
           # 5. the check-in request is still what pb.Marshal produces
           (cd testdata && go run gen_checkin.go > /tmp/checkin-vectors.edn)
           diff -u testdata/checkin-vectors.edn /tmp/checkin-vectors.edn
+          # 6. and the bloom filter still answers the way Storj's does. Not a
+          #    round trip: every probe takes a little-endian uint64 modulo the
+          #    table size, and disagreeing about which bucket a piece lands in
+          #    means deleting different pieces.
+          (cd testdata && go run gen_bloom.go > /tmp/bloom-vectors.edn)
+          diff -u testdata/bloom-vectors.edn /tmp/bloom-vectors.edn
           (cd testdata && go run gen_identity.go -pem)
           git diff --exit-code testdata/identity.cert
           for h in $(grep -o '"[0-9a-f]\{16,\}"' testdata/sigs.edn | tr -d '"'); do

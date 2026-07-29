@@ -1,3 +1,5 @@
+github.com/bmkessler/fastdiv v0.0.0-20190227075523-41d5178f2044 h1:8Rz0TcIbkvU+x53bDQgezQ3tbjrQSpZRr6h9JnR9lZU=
+github.com/bmkessler/fastdiv v0.0.0-20190227075523-41d5178f2044/go.mod h1:OI0uaNyGvxANSxteY6/mFRZs9EcQGqK30Bd1wqQj9zQ=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/gogo/protobuf v1.3.2 h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q=
