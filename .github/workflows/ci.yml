@@ -115,3 +115,84 @@ jobs:
           nbb --classpath "$(clojure -A:cljs -Spath)" scripts/mint_identity.cljc \
             /tmp/identity-cljs 16
           (cd testdata && go run verify_minted.go -dir /tmp/identity-cljs)
+
+  tls:
+    # The strongest evidence this repo can produce without touching the live
+    # network: a peer built from storj.io/common's own tlsopts and this
+    # library handshake with each other, mutually authenticated, and each
+    # reports the node ID the other minted.
+    #
+    # All four combinations, because a client and a server are not the same
+    # code and neither runtime is the other. The exchange after the handshake
+    # is not decoration: on TLS 1.3 a client that hangs up right after its own
+    # Finished leaves the server reporting EOF while the client reports
+    # success, which is exactly what happened the first time this ran.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - run: npm install
+      - run: npm install -g nbb
+      - name: Mint the two identities
+        run: |
+          set -euo pipefail
+          clojure -M:mint /tmp/id-cljc 8
+          clojure -M:mint /tmp/id-go 8
+          echo "CLJC_ID=$(sed -n 's/.*:node-id "\([0-9a-f]*\)".*/\1/p' /tmp/id-cljc/minted.edn)" >> "$GITHUB_ENV"
+          echo "GO_ID=$(sed -n 's/.*:node-id "\([0-9a-f]*\)".*/\1/p' /tmp/id-go/minted.edn)" >> "$GITHUB_ENV"
+      - name: JVM client against a Go tlsopts server
+        run: |
+          set -euo pipefail
+          (cd testdata && go run tls_peer.go -serve -identity /tmp/id-go -port 19443 -expect "$CLJC_ID" > /tmp/go-serve.log 2>&1) &
+          timeout 60 bash -c 'until grep -q listening /tmp/go-serve.log 2>/dev/null; do sleep 1; done'
+          clojure -M:tls-peer dial /tmp/id-cljc 127.0.0.1:19443 "$GO_ID"
+          wait
+          cat /tmp/go-serve.log
+          grep -q "application data flowed" /tmp/go-serve.log
+      - name: nbb client against a Go tlsopts server
+        run: |
+          set -euo pipefail
+          (cd testdata && go run tls_peer.go -serve -identity /tmp/id-go -port 19444 -expect "$CLJC_ID" > /tmp/go-serve2.log 2>&1) &
+          timeout 60 bash -c 'until grep -q listening /tmp/go-serve2.log 2>/dev/null; do sleep 1; done'
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+            dial /tmp/id-cljc 127.0.0.1:19444 "$GO_ID"
+          wait
+          cat /tmp/go-serve2.log
+          grep -q "application data flowed" /tmp/go-serve2.log
+      - name: Go client against a JVM server
+        run: |
+          set -euo pipefail
+          (clojure -M:tls-peer serve /tmp/id-cljc 19445 "$GO_ID" > /tmp/jvm-serve.log 2>&1) &
+          timeout 60 bash -c 'until grep -q listening /tmp/jvm-serve.log 2>/dev/null; do sleep 1; done'
+          (cd testdata && go run tls_peer.go -dial 127.0.0.1:19445 -identity /tmp/id-go -expect "$CLJC_ID")
+          wait
+          cat /tmp/jvm-serve.log
+          grep -q "application data flowed" /tmp/jvm-serve.log
+      - name: Go client against an nbb server
+        run: |
+          set -euo pipefail
+          (nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+            serve /tmp/id-cljc 19446 "$GO_ID" > /tmp/nbb-serve.log 2>&1) &
+          timeout 60 bash -c 'until grep -q listening /tmp/nbb-serve.log 2>/dev/null; do sleep 1; done'
+          (cd testdata && go run tls_peer.go -dial 127.0.0.1:19446 -identity /tmp/id-go -expect "$CLJC_ID")
+          wait
+          cat /tmp/nbb-serve.log
+          grep -q "application data flowed" /tmp/nbb-serve.log
+      - name: A peer that is not the node we dialled is refused
+        run: |
+          set -euo pipefail
+          (cd testdata && go run tls_peer.go -serve -identity /tmp/id-go -port 19447 > /tmp/go-refuse.log 2>&1) &
+          timeout 60 bash -c 'until grep -q listening /tmp/go-refuse.log 2>/dev/null; do sleep 1; done'
+          if clojure -M:tls-peer dial /tmp/id-cljc 127.0.0.1:19447 \
+               aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; then
+            echo "the wrong node id was accepted"
+            exit 1
+          fi

@@ -17,12 +17,14 @@ Storj a node is.
 | `storj.node.certificate` | The two certificates a Storj identity is made of. |
 | `storj.node.mint` | The proof of work, and the identity it names. |
 | `storj.node.pem` | PEM and base64 — what an identity looks like on disk. |
+| `storj.node.tls` | What a Storj TLS connection is, as data, and who may be on it. |
 | `storj.node.pb` | The Storj messages, and **the exact bytes their signatures cover**. |
 | `storj.node.orders` | Whether an order limit may be acted on, and every reason it may not. |
 | `storj.node.piece` | Blob paths and the V1 piece header. |
 | `storj.node.protocols` | The host seams: `IVerifier`, `IClock`, `IBlobStore`. |
 | `storj.node.host.verify` | The reference `IVerifier` — the four schemes Storj presents. |
 | `storj.node.host.keys` | The reference `IKeyMaterial` — key generation, signing, entropy. |
+| `storj.node.host.tls` | Sockets. The one namespace here that decides nothing. |
 | `storj.node.bytes` | The one file that knows which runtime it is on. |
 
 ## Scope — read this before using it
@@ -49,6 +51,11 @@ Implemented and tested on two runtimes:
   operator actually needs — almost nobody mints an identity, and everybody who
   has one already has four files. `identity.FullIdentityFromPEM` loads what
   this writes, and what this renders is byte-identical to Go's own PEM.
+- **Mutual TLS.** Connecting and accepting with Storj's rules: no trusted
+  roots, no hostnames, `RequireAnyClientCert`, and
+  `storj.node.identity/admit-chain` in the place certificate validation would
+  otherwise be. A live handshake against a peer built from Storj's own
+  `tlsopts` runs in CI, in all four client/server × JVM/nbb combinations.
 - Signature verification for all four schemes Storj presents: ECDSA-SHA256,
   ed25519 piece keys, and RSA under **both** PKCS#1 v1.5 (certificates) and
   PSS (messages) — checked against signatures Storj's own code produced, on
@@ -56,12 +63,10 @@ Implemented and tested on two runtimes:
 
 **Not implemented.** A node built on this would still need all of it:
 
-- **The TLS handshake and the socket.** The peer certificate *rules* are
-  implemented (`storj.node.identity`), the signature check underneath them is
-  implemented (`storj.node.host.verify`), and DRPC framing lives in
-  [`kotoba-lang/drpc`](https://github.com/kotoba-lang/drpc) — but nothing here
-  terminates TLS or opens a connection. What is left there is mechanism: the
-  decisions a peer certificate forces are made above.
+- **Speaking DRPC over the connection.** The framing lives in
+  [`kotoba-lang/drpc`](https://github.com/kotoba-lang/drpc) and the connection
+  now exists, but nothing joins them: `storj.node.host.tls` hands back a
+  verified socket and stops.
 - **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
   collection bloom filters, graceful exit.
 - **Streaming.** `IBlobStore` moves whole blobs; a real node streams and
@@ -109,6 +114,12 @@ So the expected values come from elsewhere:
   and `FullCAConfig.Load` read it back — 24 checks, including that each
   private key really is the key its certificate carries. CI mints afresh on
   both runtimes every run.
+- **A live handshake.** The `tls` job runs a peer built from `tlsopts` and one
+  built from this library against each other and requires both to name the
+  other's node ID — client and server, JVM and nbb, four combinations. The
+  greeting exchanged afterwards is not decoration: on TLS 1.3 a client that
+  hangs up right after its own Finished leaves the server reporting EOF while
+  the client reports success, which is what happened the first time this ran.
 - **Byte-identical reconstruction.** Stronger still, and deterministic: given
   the serial, key and extensions of the fixture's real certificate,
   `storj.node.certificate` rebuilds its signed body and the result is equal,
@@ -211,6 +222,7 @@ clojure -M:lint
 cd testdata && go run gen_vectors.go                         # regenerate vectors
 cd testdata && go run gen_sigs.go -verify                    # recheck signatures
 clojure -M:mint /tmp/identity 16                              # mint an identity
+clojure -M:tls-peer serve /tmp/identity 19443                # and speak TLS with it
 cd testdata && go run verify_minted.go -dir /tmp/identity    # and let Storj load it
 cd testdata && go run gen_identity.go -pem                   # rebuild identity.cert
 ```
