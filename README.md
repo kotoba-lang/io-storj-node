@@ -18,6 +18,7 @@ Storj a node is.
 | `storj.node.orders` | Whether an order limit may be acted on, and every reason it may not. |
 | `storj.node.piece` | Blob paths and the V1 piece header. |
 | `storj.node.protocols` | The host seams: `IVerifier`, `IClock`, `IBlobStore`. |
+| `storj.node.host.verify` | The reference `IVerifier` — the four schemes Storj presents. |
 | `storj.node.bytes` | The one file that knows which runtime it is on. |
 
 ## Scope — read this before using it
@@ -36,13 +37,19 @@ Implemented and tested on two runtimes:
 - Reading a peer's certificate chain, deriving its node id from the CA key,
   and admitting or refusing it — chain signatures, difficulty floor, expected
   id, identity version, extension rules.
+- Signature verification for all four schemes Storj presents: ECDSA-SHA256,
+  ed25519 piece keys, and RSA under **both** PKCS#1 v1.5 (certificates) and
+  PSS (messages) — checked against signatures Storj's own code produced, on
+  both runtimes.
 
 **Not implemented.** A node built on this would still need all of it:
 
 - **The TLS handshake and the socket.** The peer certificate *rules* are
-  implemented (`storj.node.identity`) and DRPC framing lives in
-  [`kotoba-lang/drpc`](https://github.com/kotoba-lang/drpc), but nothing here
-  terminates TLS or opens a connection.
+  implemented (`storj.node.identity`), the signature check underneath them is
+  implemented (`storj.node.host.verify`), and DRPC framing lives in
+  [`kotoba-lang/drpc`](https://github.com/kotoba-lang/drpc) — but nothing here
+  terminates TLS or opens a connection. What is left there is mechanism: the
+  decisions a peer certificate forces are made above.
 - **Identity generation** — the proof of work that mints an ID, and the CA
   and leaf certificates that carry it.
 - **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
@@ -79,9 +86,16 @@ So the expected values come from elsewhere:
   with `storj.io/common` and asserts the node id, version and chain
   relationships the tests claim — holding the fixture to the reference
   implementation rather than to a previous run of the generator.
+- **Real signatures.** `testdata/gen_sigs.go` signs with `pkcrypto` and
+  `storj.PiecePrivateKey` and records the result; CI runs it with `-verify`.
+  Until this existed, `IVerifier` was stubbed everywhere and the entire
+  admission path — certificate chains and order limits both — had never once
+  seen a signature that could fail.
 - **Both runtimes.** JVM and nbb run the same suite. SHA-256 comes from
   `MessageDigest` on one and `@noble/hashes` on the other, and varint
   handling has to survive JavaScript truncating bitwise operators at 32 bits.
+  The verifier is the sharpest case: `java.security` on one side, Node's
+  OpenSSL bindings on the other, asked the same four questions.
 
 Reading the `.proto` and reasoning carefully produced an implementation that
 was wrong in two independent ways, and the vectors caught both:
@@ -101,9 +115,23 @@ above encodes a first arc of 2, and dividing by 40 instead — the obvious
 reading — turns Storj's `2.999.2.1` identity-version extension into
 `24.39.2.1`, so every certificate would silently look unversioned.
 
+A fifth is the one this repo went looking for rather than tripped over.
+Storj signs *messages* with RSA-PSS and *certificates* with PKCS#1 v1.5 —
+same key, same hash, two paddings. One RSA implementation used for both
+questions does not raise an error; it reports a valid signature as invalid,
+and only on the identities old enough to still use RSA. The fixture records
+both signatures over the same message so each padding is checked against the
+other's bytes.
+
 The suite has been checked to fail when each of those is reintroduced,
-including deriving the node id from the leaf rather than the CA, and dropping
-the self-signature check that ends a chain.
+including deriving the node id from the leaf rather than the CA, dropping the
+self-signature check that ends a chain, verifying PSS with PKCS#1 padding,
+using a hash-length PSS salt instead of the largest that fits, and handing
+ed25519 its raw key without the SPKI wrapper. Eleven such controls were run,
+on both runtimes. The first attempt at the PSS one silently did not compile
+and so reported nothing at all — a control that produces no failure and a
+control that produces no result look the same from a distance, and neither is
+evidence.
 
 ## Test
 
@@ -112,6 +140,7 @@ clojure -M:test                                              # JVM
 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
 clojure -M:lint
 cd testdata && go run gen_vectors.go                         # regenerate vectors
+cd testdata && go run gen_sigs.go -verify                    # recheck signatures
 ```
 
 `testdata/` is a vector generator, not a dependency: nothing under `src/`

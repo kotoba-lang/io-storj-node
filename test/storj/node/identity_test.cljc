@@ -17,6 +17,7 @@
             [storj.node.bytes :as b]
             [storj.node.der :as der]
             [storj.node.id :as node-id]
+            [storj.node.host.verify :as v]
             [storj.node.identity :as ident]
             [storj.node.protocols :as p]))
 
@@ -248,3 +249,46 @@
     (is (thrown? #?(:clj Exception :cljs js/Error)
                  (#'ident/extensions-of
                   (der/children (der/parse (into [0x30 (count tbs-tail)] tbs-tail))))))))
+
+;; ── with the real verifier ──────────────────────────────────────────────────
+
+(defn- subsequence-index [haystack needle]
+  (first (keep-indexed (fn [i _]
+                         (when (= (subvec (vec haystack) i (+ i (count needle)))
+                                  (vec needle))
+                           i))
+                       (take (inc (- (count haystack) (count needle))) haystack))))
+
+(defn- flip-public-key
+  "One bit changed in the last byte of the certificate's public key.
+
+  Tampering has to land on data rather than on a tag or a length, or the
+  certificate stops parsing and the test proves that DER is strict instead of
+  proving that the signature is checked. The final byte of the EC point is
+  data by construction, and it is inside the tbsCertificate, which is what the
+  signature covers."
+  [cert-der spki-der]
+  (let [i (subsequence-index cert-der spki-der)]
+    (update (vec cert-der) (+ i (dec (count spki-der))) bit-xor 0x01)))
+
+(deftest a-real-chain-is-admitted-by-real-crypto
+  ;; Everything above this point stubs `IVerifier`, which means the rules were
+  ;; checked and the signatures never were. This runs the same chain through
+  ;; `storj.node.host.verify`, so the ECDSA check is the platform's own.
+  (let [r (ident/admit-chain chain {:verifier v/verifier})]
+    (is (:ok? r) (pr-str (:reasons r)))
+    (is (= node-id-hex (b/hex (:node-id r))))
+    (is (= 10 (:difficulty r)) "the difficulty testdata/identity.edn recorded"))
+  (testing "a leaf whose key was altered is refused"
+    (let [r (ident/admit-chain [(flip-public-key leaf-der (:spki-der (ident/certificate leaf-der))) ca-der]
+                               {:verifier v/verifier})]
+      (is (not (:ok? r)))
+      (is (= #{:chain-signature-invalid} (set (map :reason (:reasons r)))))))
+  (testing "a CA whose key was altered is refused, and would have renamed the node"
+    ;; the node id comes from this key, so accepting the chain would mean
+    ;; accepting a peer's own choice of name
+    (let [tampered (flip-public-key ca-der ca-spki-der)
+          r (ident/admit-chain [leaf-der tampered] {:verifier v/verifier})]
+      (is (not (:ok? r)))
+      (is (= #{:chain-signature-invalid} (set (map :reason (:reasons r)))))
+      (is (not= node-id-hex (b/hex (:node-id r)))))))
