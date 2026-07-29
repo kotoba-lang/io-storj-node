@@ -16,6 +16,7 @@ Storj a node is.
 | `storj.node.der` | Just enough DER to read an X.509 certificate, and to write one. |
 | `storj.node.certificate` | The two certificates a Storj identity is made of. |
 | `storj.node.mint` | The proof of work, and the identity it names. |
+| `storj.node.pem` | PEM and base64 — what an identity looks like on disk. |
 | `storj.node.pb` | The Storj messages, and **the exact bytes their signatures cover**. |
 | `storj.node.orders` | Whether an order limit may be acted on, and every reason it may not. |
 | `storj.node.piece` | Blob paths and the V1 piece header. |
@@ -43,6 +44,11 @@ Implemented and tested on two runtimes:
 - **Minting an identity**: the proof of work over CA keys, and the CA and
   leaf certificates that carry it — accepted by `storj.io/common` and
   byte-identical to what `identity.NewCA` produces for the same inputs.
+- **Identity files**: reading and writing `ca.cert`, `ca.key`,
+  `identity.cert` and `identity.key`, in Storj's layout. This is the part an
+  operator actually needs — almost nobody mints an identity, and everybody who
+  has one already has four files. `identity.FullIdentityFromPEM` loads what
+  this writes, and what this renders is byte-identical to Go's own PEM.
 - Signature verification for all four schemes Storj presents: ECDSA-SHA256,
   ed25519 piece keys, and RSA under **both** PKCS#1 v1.5 (certificates) and
   PSS (messages) — checked against signatures Storj's own code produced, on
@@ -56,9 +62,6 @@ Implemented and tested on two runtimes:
   [`kotoba-lang/drpc`](https://github.com/kotoba-lang/drpc) — but nothing here
   terminates TLS or opens a connection. What is left there is mechanism: the
   decisions a peer certificate forces are made above.
-- **Persisting an identity.** `mint` returns keys; writing them to disk means
-  choosing a format, a location and a permission mode, which is the host's to
-  choose.
 - **Order settlement** (`SettlementWithWindow`), check-in, retain/garbage
   collection bloom filters, graceful exit.
 - **Streaming.** `IBlobStore` moves whole blobs; a real node streams and
@@ -101,7 +104,11 @@ So the expected values come from elsewhere:
   `PeerIdentityFromChain`, and the structural details down to which
   certificate carries a subjectKeyIdentifier. A parser agreeing with its own
   writer proves nothing, and reading a certificate correctly is not evidence
-  that one can be written. CI mints afresh on both runtimes every run.
+  that one can be written. Since identity files landed it goes further: the
+  .cljc writes a whole identity directory and `identity.FullIdentityFromPEM`
+  and `FullCAConfig.Load` read it back — 24 checks, including that each
+  private key really is the key its certificate carries. CI mints afresh on
+  both runtimes every run.
 - **Byte-identical reconstruction.** Stronger still, and deterministic: given
   the serial, key and extensions of the fixture's real certificate,
   `storj.node.certificate` rebuilds its signed body and the result is equal,
@@ -173,17 +180,27 @@ context tag, seeding the OID accumulator from the rebound binding, emitting a
 fixed unused-bit count, dropping an INTEGER's sign byte, accepting the first
 key regardless of difficulty, signing the leaf with its own key, hashing the
 whole SubjectPublicKeyInfo for the subjectKeyIdentifier, and tagging the
-validity dates as UTCTime.
+validity dates as UTCTime, swapping two letters of the base64 alphabet,
+wrapping PEM lines at 76 characters, and skipping an unterminated PEM block
+the way Go does.
 
-Nineteen controls in total. The eleven for the verifier were run on both
+Twenty-seven controls in total. The eleven for the verifier were run on both
 runtimes, because that namespace is two implementations of the same four
 questions; the eight for minting were run on the JVM, because the code they
 break is shared `.cljc` and would fail identically on either.
 
-Two of the nineteen silently failed to compile on the first attempt and
-reported nothing at all. A control that produces no failure and a control
-that produces no result look the same from a distance, and neither is
-evidence — which is worth stating twice, because it happened twice.
+Two of them silently failed to compile on the first attempt and reported
+nothing at all. A control that produces no failure and a control that
+produces no result look the same from a distance, and neither is evidence —
+worth stating twice, because it happened twice.
+
+A third control genuinely passed, and the fault was in the test rather than
+in the code. Removing the unterminated-block check left the suite green,
+because the test used `thrown?` and the missing check produced a
+null-pointer exception instead of a refusal — which `thrown?` accepts just as
+happily. Every refusal in `pem_test.cljc` now names *which* error, with
+`thrown-with-msg?`. A test that accepts any exception is not testing the
+refusal it claims to.
 
 ## Test
 
@@ -193,8 +210,9 @@ nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
 clojure -M:lint
 cd testdata && go run gen_vectors.go                         # regenerate vectors
 cd testdata && go run gen_sigs.go -verify                    # recheck signatures
-clojure -M:mint testdata/minted.edn 16                       # mint an identity
-cd testdata && go run verify_minted.go -in minted.edn        # and let Storj judge it
+clojure -M:mint /tmp/identity 16                              # mint an identity
+cd testdata && go run verify_minted.go -dir /tmp/identity    # and let Storj load it
+cd testdata && go run gen_identity.go -pem                   # rebuild identity.cert
 ```
 
 `testdata/` is a vector generator, not a dependency: nothing under `src/`

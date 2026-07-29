@@ -1,43 +1,61 @@
 (ns mint-identity
-  "Mint an identity with this runtime's crypto and write it where the Go
-  verifier can read it.
+  "Mint an identity with this runtime's crypto and lay it out on disk the way
+  Storj does, so the reference implementation can be asked to load it.
 
   One file for both runtimes, because the point of running it twice is that
   the *library* is the same and the crypto underneath it is not — a JVM
-  `KeyPairGenerator` and Node's OpenSSL bindings, producing certificates that
-  Storj then has to accept from either.
+  `KeyPairGenerator` and Node's OpenSSL bindings, producing an identity
+  directory that `identity.FullIdentityFromPEM` then has to accept from
+  either.
 
-      clojure -M:mint testdata/minted.edn 16
+      clojure -M:mint /tmp/identity-jvm 16
       nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/mint_identity.cljc \\
-        testdata/minted-cljs.edn 16
-      cd testdata && go run verify_minted.go -in minted.edn
+        /tmp/identity-cljs 16
+      cd testdata && go run verify_minted.go -dir /tmp/identity-jvm
 
-  Nothing in the test suite depends on the output: it is an artifact for the
-  reference implementation to judge, and CI regenerates it every run rather
-  than checking one in. A fixed identity would only ever prove that one
-  identity was well formed."
+  The four file names are Storj's. `ca.cert` and `ca.key` hold the authority;
+  `identity.cert` holds the leaf followed by the CA; `identity.key` holds the
+  **leaf's** key — the one that signs messages, while it is the CA's key the
+  node is named after.
+
+  Nothing in the test suite depends on the output; CI regenerates it every run
+  rather than checking one in, because a fixed identity would only ever prove
+  that one identity was well formed."
   (:require [storj.node.bytes :as b]
             [storj.node.host.keys :as hk]
+            [storj.node.identity :as ident]
             [storj.node.mint :as mint]
             #?(:cljs ["node:fs" :as fs])))
 
-(defn run [path difficulty]
-  (let [m (mint/mint hk/key-material {:difficulty difficulty})
-        edn (str "{;; minted by scripts/mint_identity.cljc — not a fixture\n"
-                 " :ca-der \"" (b/hex (get-in m [:ca :der])) "\"\n"
-                 " :leaf-der \"" (b/hex (get-in m [:leaf :der])) "\"\n"
+(defn- write! [path text]
+  #?(:clj (spit path text) :cljs (fs/writeFileSync path text)))
+
+(defn- mkdirs! [dir]
+  #?(:clj  (.mkdirs (java.io.File. ^String dir))
+     :cljs (fs/mkdirSync dir #js {:recursive true})))
+
+(defn run [dir difficulty]
+  (mkdirs! dir)
+  (let [m        (mint/mint hk/key-material {:difficulty difficulty})
+        ca-key   (hk/export-private-key (get-in m [:ca :private]))
+        leaf-key (hk/export-private-key (get-in m [:leaf :private]))]
+    (write! (str dir "/ca.cert")       (ident/chain-pem [(get-in m [:ca :der])]))
+    (write! (str dir "/ca.key")        (ident/private-key-pem ca-key))
+    (write! (str dir "/identity.cert") (ident/chain-pem (:chain m)))
+    (write! (str dir "/identity.key")  (ident/private-key-pem leaf-key))
+    (write! (str dir "/minted.edn")
+            (str "{;; minted by scripts/mint_identity.cljc — not a fixture\n"
                  " :node-id \"" (b/hex (:node-id m)) "\"\n"
                  " :difficulty " (:difficulty m) "\n"
                  " :attempts " (:attempts m) "\n"
-                 " :version 0}\n")]
-    #?(:clj (spit path edn) :cljs (fs/writeFileSync path edn))
+                 " :version 0}\n"))
     (println "minted" (b/hex (:node-id m))
              "difficulty" (:difficulty m)
-             "after" (:attempts m) "attempts →" path)))
+             "after" (:attempts m) "attempts →" dir)))
 
 #?(:clj
-   (defn -main [& [path difficulty]]
-     (run (or path "testdata/minted.edn")
+   (defn -main [& [dir difficulty]]
+     (run (or dir "/tmp/storj-identity")
           (if difficulty (parse-long difficulty) 16))))
 
 #?(:cljs
@@ -45,6 +63,6 @@
    ;; argv ahead of the script, so dropping a fixed number of entries reads
    ;; `--classpath` as the output path and the classpath itself as the
    ;; difficulty, which then never matches and looks like bad luck.
-   (let [[path difficulty] *command-line-args*]
-     (run (or path "testdata/minted-cljs.edn")
+   (let [[dir difficulty] *command-line-args*]
+     (run (or dir "/tmp/storj-identity")
           (if difficulty (js/parseInt difficulty 10) 16))))

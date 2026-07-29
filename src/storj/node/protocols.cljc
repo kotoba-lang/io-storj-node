@@ -64,3 +64,20 @@
   (-generate-keypair [this])
   (-sign [this private-key algorithm data])
   (-random-bytes [this n]))
+
+(defprotocol IKeyStorage
+  "Getting a private key in and out of bytes.
+
+  Separate from `IKeyMaterial` because the two answer different questions. A
+  host that only ever mints and signs never needs this; a host holding keys in
+  an HSM *cannot* implement it, and should not be forced to pretend by an
+  interface that assumes every key can be exported.
+
+  `-export-private-key` returns PKCS#8 DER, which is what Go writes and
+  therefore what an `identity.key` file contains. `-import-private-key` takes
+  the same, plus the encoding `storj.node.identity/parse-private-key-pem`
+  reported — `:pkcs8` or the older `:sec1` — because a runtime's importer
+  takes one or the other and mistaking them produces a key that is wrong
+  rather than an error."
+  (-export-private-key [this private-key])
+  (-import-private-key [this der encoding]))

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/hex"
@@ -26,6 +27,7 @@ import (
 
 	"storj.io/common/identity"
 	"storj.io/common/peertls"
+	"storj.io/common/pkcrypto"
 	"storj.io/common/storj"
 )
 
@@ -33,10 +35,15 @@ const path = "identity.edn"
 
 func main() {
 	verify := flag.Bool("verify", false, "verify the recorded identity instead of generating one")
+	writePEM := flag.Bool("pem", false, "write identity.cert from the recorded certificates")
 	flag.Parse()
 
 	if *verify {
 		doVerify()
+		return
+	}
+	if *writePEM {
+		doWritePEM()
 		return
 	}
 	doGenerate()
@@ -95,6 +102,35 @@ func doGenerate() {
 		panic(err)
 	}
 	fmt.Print(b.String())
+}
+
+// doWritePEM renders the *recorded* certificates as PEM, rather than
+// generating anything. identity.edn is a fixture from one particular random
+// identity and regenerating it would invalidate every other constant derived
+// from it; this is deterministic, so CI can rebuild identity.cert and diff.
+func doWritePEM() {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	src := string(raw)
+	leaf, err := x509.ParseCertificate(unhex(field(src, "leaf-der")))
+	if err != nil {
+		panic(err)
+	}
+	ca, err := x509.ParseCertificate(unhex(field(src, "ca-der")))
+	if err != nil {
+		panic(err)
+	}
+	// FullIdentity.Chain() order: leaf first, then the CA.
+	var out bytes.Buffer
+	if err := pkcrypto.WriteCertPEM(&out, leaf, ca); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile("identity.cert", out.Bytes(), 0o644); err != nil {
+		panic(err)
+	}
+	fmt.Printf("wrote identity.cert (%d bytes)\n", out.Len())
 }
 
 func field(src, name string) string {
