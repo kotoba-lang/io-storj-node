@@ -17,12 +17,22 @@
 
   ## What it does not do
 
+   answers calls on a socket the other way round, and it is
+  the same shape: read, hand the decision somewhere else, write what comes
+  back. Neither closes the socket.
+
+  `serve-connection` answers calls on a socket the other way round, and it is
+  the same shape: read, hand the decision somewhere else, write what comes
+  back. Neither closes the socket.
+
   One call at a time, on a stream the caller names. DRPC multiplexes and this
   does not: a real node runs several calls over one connection and needs a
   reader that dispatches packets to whichever call is waiting. That is a
   scheduler, and writing one before there is a second caller would be
   guessing at what it needs."
   (:require [drpc.client :as c]
+            [storj.node.protocols :as p]
+            [drpc.server :as srv]
             [drpc.wire :as w]
             [storj.node.bytes :as b]
             #?(:cljs ["node:tls"]))
@@ -102,7 +112,70 @@
             (.once socket "error" (fn [e] (js/clearTimeout timer) (reject e)))
             (.write socket (b/->native payload))))))))
 
+(defn -put-seed
+  "Put a zero-length blob at `path`.
+
+  A convenience for harnesses that need a node to *hold* something before any
+  rpc that stores one exists. Named with a leading dash as a reminder that it
+  is scaffolding, not part of how a node acquires pieces."
+  [store path]
+  (p/-put store path []))
+
 (defn ok?
   "Whether a call returned a response rather than an error or a hangup."
   [result]
   (boolean (and (:message result) (nil? (:error result)))))
+
+;; ── being asked ─────────────────────────────────────────────────────────────
+
+(defn serve-connection
+  "Answer calls on `socket` until the peer goes away.
+
+  `handle` is called with `{:stream :rpc :request}` and returns
+  `{:response bytes}` or `{:error {:code n :message s}}` —
+  `storj.node.service/handle` has that shape. Whatever it returns is written
+  back; whatever it throws is not, because a handler that takes the
+  connection with it turns one bad request into a disconnected node.
+
+  Blocks on the JVM and returns a promise on cljs, and neither closes the
+  socket: the peer decides when it is done."
+  [socket handle]
+  #?(:clj
+     (let [in  (.getInputStream socket)
+           out (.getOutputStream socket)]
+       (loop [state (srv/incoming), answered 0]
+         (let [buf (byte-array 8192)
+               n   (.read in buf)]
+           (if (neg? n)
+             answered
+             (let [{:keys [state calls]} (srv/feed state (take n (seq buf)))]
+               (doseq [call calls]
+                 (let [{:keys [response error]} (handle call)]
+                   (.write out (b/->native (if error
+                                             (srv/respond-error (:stream call)
+                                                                (:code error)
+                                                                (:message error))
+                                             (srv/respond (:stream call) response))))
+                   (.flush out)))
+               (recur state (+ answered (count calls))))))))
+
+     :cljs
+     (js/Promise.
+      (fn [resolve reject]
+        (let [state (atom (srv/incoming))
+              answered (atom 0)]
+          (.on socket "data"
+               (fn [chunk]
+                 ;; not `{:keys [state ...]}` — that binding shadows the atom
+                 (let [fed (srv/feed @state chunk)]
+                   (reset! state (:state fed))
+                   (doseq [call (:calls fed)]
+                     (let [{:keys [response error]} (handle call)]
+                       (.write socket (b/->native (if error
+                                                    (srv/respond-error (:stream call)
+                                                                       (:code error)
+                                                                       (:message error))
+                                                    (srv/respond (:stream call) response))))
+                       (swap! answered inc))))))
+          (.once socket "end" #(resolve @answered))
+          (.once socket "error" reject))))))

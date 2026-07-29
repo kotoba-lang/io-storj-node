@@ -230,6 +230,20 @@ jobs:
           grep -q 'refused failed to dial storage node' /tmp/jvm-refused.out
           cat /tmp/go-checkin.log
           grep -q 'address="127.0.0.1:28967" version="1.104.5" free-disk=1099511627776' /tmp/go-checkin.log
+      - name: The node answers a satellite that dials it
+        run: |
+          set -euo pipefail
+          # the direction that was missing until now: the node is the server.
+          # A real tlsopts + drpcconn peer asks it something and reads the
+          # answer.
+          (clojure -M:tls-peer node /tmp/id-cljc 19450 > /tmp/node.log 2>&1) &
+          timeout 90 bash -c 'until grep -q listening /tmp/node.log 2>/dev/null; do sleep 1; done'
+          (cd testdata && go run tls_peer.go -dial 127.0.0.1:19450 \
+            -identity /tmp/id-go -expect "$CLJC_ID" \
+            -rpc /contact.Contact/PingNode -payload '') | tee /tmp/ping.out
+          grep -q 'ok   /contact.Contact/PingNode answered 0 bytes' /tmp/ping.out
+          cat /tmp/node.log
+          grep -q 'rpc /contact.Contact/PingNode' /tmp/node.log
       - name: A peer that is not the node we dialled is refused
         run: |
           set -euo pipefail
