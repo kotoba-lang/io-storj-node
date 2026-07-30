@@ -102,6 +102,48 @@
      debounce-limit (conj (w/varint-field 6 debounce-limit))
      features       (conj (w/varint-field 7 features)))))
 
+(defn read-check-in-request
+  "A decoded `CheckInRequest` as a map — the satellite's half of check-in.
+
+  Here so that a counterparty can be written without a second reading of
+  `contact.proto`: this and `check-in-request` share `pb/check-in-request`, so
+  a field number that is wrong is wrong for both and shows up as a round trip
+  that does not close, rather than as two implementations that quietly agree
+  with each other and disagree with Storj.
+
+  `:address` is what the node *claims*; nothing here believes it. Deciding
+  whether it is reachable means dialling it."
+  [msg]
+  {:address  (some-> (pb/get-bytes msg pb/check-in-request :address) w/bytes->utf8)
+   :version  (some-> (pb/get-msg msg pb/check-in-request :version)
+                     (as-> m {:version (some-> (pb/get-bytes m pb/node-version :version)
+                                               w/bytes->utf8)
+                              :release? (= 1 (pb/get-varint m pb/node-version :release))}))
+   :capacity (some-> (pb/get-msg msg pb/check-in-request :capacity)
+                     (as-> m {:free-disk (pb/get-varint m pb/node-capacity :free-disk)}))
+   :operator (some-> (pb/get-msg msg pb/check-in-request :operator)
+                     (as-> m {:email  (some-> (pb/get-bytes m pb/node-operator :email)
+                                              w/bytes->utf8)
+                              :wallet (some-> (pb/get-bytes m pb/node-operator :wallet)
+                                              w/bytes->utf8)}))})
+
+(defn check-in-response
+  "The bytes of a `CheckInResponse`.
+
+  `false` is written as an absent field, not as a zero: proto3 does not emit
+  scalar defaults, so a satellite that answers \"no\" sends a response that is
+  mostly empty — which is why `read-check-in-response` has to read absence as
+  false rather than as missing information."
+  [{:keys [ping-node-success ping-error-message ping-node-success-quic
+           node-tag-success node-tag-error-message]}]
+  (w/encode
+   (cond-> []
+     ping-node-success      (conj (w/varint-field 1 1))
+     ping-error-message     (conj (w/string-field 2 ping-error-message))
+     ping-node-success-quic (conj (w/varint-field 3 1))
+     node-tag-success       (conj (w/varint-field 4 1))
+     node-tag-error-message (conj (w/string-field 5 node-tag-error-message)))))
+
 (defn read-check-in-response
   "A decoded `CheckInResponse` as a map.
 

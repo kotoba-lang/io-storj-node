@@ -241,6 +241,52 @@ jobs:
           grep -q 'refused failed to dial storage node' /tmp/jvm-refused.out
           cat /tmp/go-checkin.log
           grep -q 'address="127.0.0.1:28967" version="1.104.5" free-disk=1099511627776' /tmp/go-checkin.log
+      - name: The whole check-in loop against a strict satellite, no Docker
+        run: |
+          set -euo pipefail
+          # scripts/tls_peer.cljc's `satellite` mode. Unlike testdata/tls_peer.go
+          # it requires the DRPC mux header and serves exactly one rpc path, so
+          # it refuses the two things a real satellite refused. Its docstring
+          # says why that strictness is the point, and why this is coverage
+          # rather than evidence: a counterparty written here cannot falsify a
+          # misreading made here. storj-up answers that question.
+          (clojure -M:tls-peer satellite /tmp/id-go 19600 > /tmp/sat.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/sat.log 2>/dev/null; do sleep 1; done'
+          (STORJ_MUX=1 clojure -M:tls-peer node /tmp/id-cljc 28968 > /tmp/nd.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/nd.log 2>/dev/null; do sleep 1; done'
+          STORJ_MUX=1 clojure -M:tls-peer check-in /tmp/id-cljc 127.0.0.1:19600 "$GO_ID" \
+            127.0.0.1:28968 | tee /tmp/loop.out
+          grep -q 'ok   the satellite dialled this node back' /tmp/loop.out
+          grep -q 'dialled back 127.0.0.1:28968 -> answered' /tmp/sat.log
+          cat /tmp/sat.log
+          # the same loop with the node on nbb
+          (clojure -M:tls-peer satellite /tmp/id-go 19604 > /tmp/sat2.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/sat2.log 2>/dev/null; do sleep 1; done'
+          (STORJ_MUX=1 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+            node /tmp/id-cljc 28969 > /tmp/nn.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/nn.log 2>/dev/null; do sleep 1; done'
+          STORJ_MUX=1 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+            check-in /tmp/id-cljc 127.0.0.1:19604 "$GO_ID" 127.0.0.1:28969 | tee /tmp/loop2.out
+          grep -q 'ok   the satellite dialled this node back' /tmp/loop2.out
+      - name: And it refuses what the real satellite refused
+        run: |
+          set -euo pipefail
+          # the rpc path this library had wrong for weeks. The Go harness
+          # serves any name, so it never objected; this must.
+          (clojure -M:tls-peer satellite /tmp/id-go 19602 > /tmp/sat3.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/sat3.log 2>/dev/null; do sleep 1; done'
+          STORJ_MUX=1 clojure -M:tls-peer call /tmp/id-cljc 127.0.0.1:19602 "$GO_ID" \
+            /node.Node/CheckIn 'x' > /tmp/wrong.out 2>&1 || true
+          cat /tmp/wrong.out
+          grep -q 'unknown rpc: /node.Node/CheckIn' /tmp/wrong.out
+          # and a client that omits the mux header does not get in
+          (clojure -M:tls-peer satellite /tmp/id-go 19601 > /tmp/sat4.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/sat4.log 2>/dev/null; do sleep 1; done'
+          if clojure -M:tls-peer check-in /tmp/id-cljc 127.0.0.1:19601 "$GO_ID" \
+               127.0.0.1:28968 > /tmp/nohdr.out 2>&1; then
+            echo "a client with no mux header was accepted"; cat /tmp/nohdr.out; exit 1
+          fi
+          echo "ok   no mux header, no connection"
       - name: The node answers a satellite that dials it
         run: |
           set -euo pipefail
