@@ -23,8 +23,16 @@
   ## What is missing
 
   DRPC is framed by `kotoba-lang/drpc` and is not wired in here; this hands
-  back a connected, verified socket and stops. Nothing in this repo has
-  spoken to a real satellite."
+  back a connected, verified socket and stops.
+
+  ## What has actually happened over one of these
+
+  A check-in against a real Storj satellite (`storj-up`, satellite 1.158.2),
+  accepted, with the satellite dialling back and being served — on both
+  runtimes. That required `drpc-mux-header` in both directions and is the
+  reason this namespace has `:preamble` and `:expect-preamble` at all. What is
+  still untried is everything after introduction: no piece has been uploaded
+  to or downloaded from anything."
   (:require [storj.node.bytes :as b]
             [storj.node.host.keys :as hk]
             [storj.node.host.verify :as v]
