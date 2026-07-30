@@ -36,15 +36,39 @@
   node that buffers are the same decision with different memory, and that is
   the host's to make.
 
-  It also does not verify the uplink's signature on `done`. That needs the
-  uplink's piece public key from the limit and the same `IVerifier` everything
-  else uses — the pieces are all here, and wiring them is the next thing
-  rather than this thing. `finish-upload` says so in its result rather than
-  quietly implying the hash was checked."
+  ## The uplink's signature on `done`
+
+  `finish-upload` checks it when it is given a verifier, and reports
+  `:hash-verified?` either way rather than leaving the caller to guess. The
+  key is `uplink_public_key` in the limit — 32 raw ed25519 bytes, no DER
+  wrapper, which is the one row in `host.verify`'s table that is not an SPKI.
+
+  Two things about it are not obvious and are both enforced below:
+
+  - **The signed bytes are a different message.** `signing.EncodePieceHash`
+    builds a `PieceHashSigning`, which is a `PieceHash` with the signature
+    dropped and the timestamp dropped *when it is zero*. That is the opposite
+    of `OrderLimit`, where `nullable=false` means a zero timestamp is emitted
+    — the two messages sit beside each other and disagree.
+  - **Unknown fields are refused, not preserved.** `verifyUplinkPieceHash-
+    Signature` rejects anything with unrecognized fields before it encodes.
+    An order limit keeps them; a piece hash may not have them at all.
+
+  When there is nothing to check with — no key in the limit, or no signature
+  in the message — the upload still succeeds and reports `:hash-verified?
+  false`. Those are real states an uplink can produce, and a node that
+  rejected them would refuse pieces over a signature nobody claimed to have
+  sent. What it must not do is claim the hash was checked.
+
+  A missing *verifier* is not one of those states: `orders/admit` refuses a
+  limit without one, so an upload with no verifier never reaches
+  `finish-upload`. The guard for it exists because `verify-piece-hash` is
+  also callable directly, and is unreachable through this path."
   (:require [proto.wire :as w]
             [storj.node.bytes :as b]
             [storj.node.orders :as orders]
-            [storj.node.pb :as pb]))
+            [storj.node.pb :as pb]
+            [storj.node.protocols :as p]))
 
 ;; ── reading the parts of a message ──────────────────────────────────────────
 
@@ -94,6 +118,11 @@
           admitted
           (let [state {:ok? true
                        :limit limit
+                       ;; carried from `opts` rather than asked for again at
+                       ;; `finish-upload`: the verifier is already here, and a
+                       ;; second parameter three calls later is one a caller
+                       ;; can leave out and never notice
+                       :verifier (:verifier opts)
                        :piece-id (:piece-id admitted)
                        :max-bytes (:limit admitted)
                        :hash-algorithm (or hash-algorithm :sha256)
@@ -156,6 +185,57 @@
            :state (-> state (assoc :received total) (update :chunks inc))
            :accepted (vec data)})))))
 
+(defn- unknown-fields
+  "Field numbers in `msg` that `pb/piece-hash` does not name.
+
+  A piece hash carrying one cannot be verified: `EncodePieceHash` would sign
+  over bytes this build cannot reproduce, and Storj does not try — it refuses
+  the message. So this is a list rather than a boolean, because a refusal that
+  cannot say which field is a refusal nobody can act on."
+  [msg]
+  ;; a decoded message is already the vector of its fields — `w/fields` picks
+  ;; one number out of it, which is the opposite of what this wants
+  (->> msg
+       (map :field-number)
+       distinct
+       (remove #(contains? pb/piece-hash %))
+       sort))
+
+(defn- verify-piece-hash
+  "Check the uplink's signature over `done`.
+
+      {:verified? bool}                      checked, or nothing to check with
+      {:ok? false :reasons [...]}            checked and wrong
+
+  Three ways to have nothing to check with, and they are not the same as a
+  bad signature: no verifier configured, no key in the limit, no signature in
+  the message. Each returns `:verified? false` and lets the upload stand —
+  a node with no key material should not silently reject every piece — while
+  a signature that is present and wrong is refused.
+
+  The key is 32 raw ed25519 bytes out of `uplink_public_key`. A limit whose
+  key is the wrong length is refused rather than passed to the verifier: an
+  ed25519 verify with a short key is an error at a layer that reports it as
+  `invalid signature`, which reads as the uplink's fault."
+  [state done]
+  (let [verifier (:verifier state)
+        key      (some-> (:limit state)
+                         (pb/get-bytes pb/order-limit :uplink-public-key))
+        sig      (pb/get-bytes done pb/piece-hash :signature)]
+    (cond
+      (or (nil? verifier) (nil? key) (nil? sig)) {:verified? false}
+
+      (not= 32 (count key))
+      {:ok? false :reasons [{:reason :uplink-public-key-is-not-ed25519
+                             :length (count key)}]}
+
+      :else
+      (let [signed (pb/encode-piece-hash-for-signing done)]
+        (if (p/-verify verifier :ed25519 (vec key) signed (vec sig))
+          {:verified? true}
+          {:ok? false :reasons [{:reason :uplink-signature-invalid
+                                 :piece-id (b/hex (:piece-id state))}]})))))
+
 (defn finish-upload
   "Take the final message and say what was stored.
 
@@ -189,16 +269,27 @@
           {:ok? false :reasons [{:reason :declared-size-is-not-what-arrived
                                  :declared declared :received (:received state)}]}
 
+          (seq (unknown-fields done))
+          ;; `verifyUplinkPieceHashSignature` refuses these outright rather
+          ;; than signing over them, which is the opposite of an order limit.
+          ;; Checked before the signature: a field this build cannot read is
+          ;; a field it cannot have signed the same bytes over.
+          {:ok? false :reasons [{:reason :unknown-fields-in-piece-hash
+                                 :fields (vec (unknown-fields done))}]}
+
           :else
-          {:ok? true
-           :piece-id (:piece-id state)
-           :size (:received state)
-           :chunks (:chunks state)
-           :hash hash
-           :hash-algorithm (:hash-algorithm state)
-           :signature (pb/get-bytes done pb/piece-hash :signature)
-           :hash-verified? false
-           :state (assoc state :finished? true)})))))
+          (let [checked (verify-piece-hash state done)]
+            (if (false? (:ok? checked))
+              {:ok? false :reasons (:reasons checked)}
+              {:ok? true
+               :piece-id (:piece-id state)
+               :size (:received state)
+               :chunks (:chunks state)
+               :hash hash
+               :hash-algorithm (:hash-algorithm state)
+               :signature (pb/get-bytes done pb/piece-hash :signature)
+               :hash-verified? (:verified? checked)
+               :state (assoc state :finished? true)})))))))
 
 ;; ── downloading ─────────────────────────────────────────────────────────────
 

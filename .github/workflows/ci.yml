@@ -287,6 +287,12 @@ jobs:
           # both transfers on one connection, on two streams
           grep -q 'stream 1 /piecestore.Piecestore/Upload -> end' /tmp/n.log
           grep -q 'stream 2 /piecestore.Piecestore/Download -> end' /tmp/n.log
+          # this uplink sends no key and an unsigned done, so the node must
+          # say it did not check — a node that stored a piece it could not
+          # verify must not look like one that verified it. The signature
+          # path itself is held to a real Go-generated signature in
+          # piecestore_test.
+          grep -q 'stored 300 bytes, hash-verified? false' /tmp/n.log
       - name: And it refuses what the real satellite refused
         run: |
           set -euo pipefail
