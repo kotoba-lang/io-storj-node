@@ -143,6 +143,37 @@
        (doseq [p (sort ours)]
          (is (contains? declared p) (str p " is not a path storj.io/common declares"))))))
 
+;; ── the satellite's half ────────────────────────────────────────────────────
+
+(deftest a-satellite-reads-the-bytes-pb-marshal-produced
+  ;; The point of `read-check-in-request` is to be a counterparty, and a
+  ;; counterparty that only agrees with this library's encoder is worth
+  ;; nothing — it would confirm a shared misreading. So it is pointed at the
+  ;; fixture `gen_checkin.go` produced with Storj's own pb.Marshal.
+  (let [r (contact/read-check-in-request (w/decode check-in-request-bytes))]
+    (is (= "127.0.0.1:28967" (:address r)))
+    (is (= "1.104.5" (get-in r [:version :version])))
+    (is (true? (get-in r [:version :release?])))
+    (is (= 1099511627776 (get-in r [:capacity :free-disk])))
+    (is (= "op@example.com" (get-in r [:operator :email])))
+    (is (= "0xabc" (get-in r [:operator :wallet])))))
+
+(deftest the-response-a-satellite-writes-is-one-this-library-reads
+  (testing "an acceptance is byte-identical to the recorded one"
+    (is (= response-accepted
+           (contact/check-in-response {:ping-node-success true
+                                       :ping-node-success-quic true
+                                       :node-tag-success true}))))
+  (testing "and a refusal round-trips with its reason"
+    (let [bs (contact/check-in-response {:ping-node-success false
+                                         :ping-error-message ping-error-message})
+          r  (contact/read-check-in-response (w/decode bs))]
+      (is (false? (:ping-node-success r)))
+      (is (= ping-error-message (:ping-error-message r)))
+      (is (not (contact/admitted? r)))))
+  (testing "false is absent, not zero — proto3 omits scalar defaults"
+    (is (= [] (contact/check-in-response {:ping-node-success false})))))
+
 (deftest the-request-round-trips-through-the-schema
   (let [msg (w/decode (contact/check-in-request request-opts))]
     (is (= "127.0.0.1:28967" (w/bytes->utf8 (pb/get-bytes msg pb/check-in-request :address))))

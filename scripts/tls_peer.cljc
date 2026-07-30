@@ -314,12 +314,97 @@
            (.on server "listening"
                 #(println (str "listening " (.-port (.address server))))))))))
 
+(defn satellite
+  "A satellite, enough of one to introduce a node to.
+
+  Not a stand-in for the real thing and not treated as one: it was written
+  after a real satellite corrected three things about this library, and every
+  one of them was invisible to `testdata/tls_peer.go` because that harness is
+  *permissive* — it serves whatever rpc name it is handed over plain TLS. A
+  counterparty written by the same hand as the client can only confirm what
+  that hand already believes, so the value here is not agreement. It is that
+  this one is **strict** about the things the real satellite turned out to be
+  strict about:
+
+  - the mux header is required, not optional
+  - `/contact.Node/CheckIn` is the only rpc it answers; anything else is an
+    error, which is how the wrong path would have been caught
+  - `ping_node_success` is earned by actually dialling the address back, with
+    the header, and getting an answer to `/contact.Contact/PingNode`
+
+  What it is for: the whole check-in loop, on both runtimes, in CI, with no
+  Docker and no network. What it is not for: deciding that this library is
+  correct. That question is only answered by `storj-up`.
+
+  JVM only. The dial-back has to happen before the response is written, and
+  `host.rpc/serve-connection` calls its handler synchronously on cljs — a
+  promise-returning handler would be a change to that contract rather than to
+  this script. The node under test is unaffected: it runs on either runtime
+  against this."
+  [dir port expect]
+  #?(:clj
+     (let [identity (load-identity dir)
+           ping-back
+           (fn [address]
+             ;; the address is what the node claimed; this is what makes it a
+             ;; claim that was checked
+             (try
+               (let [[h p] (str/split address #":")
+                     c (htls/connect {:host h :port (parse-long p)
+                                      :identity identity :verify-opts {}
+                                      :preamble htls/drpc-mux-header
+                                      :timeout-ms 10000})
+                     r (rpc/call (:socket c) {:rpc contact/ping-rpc :request []})]
+                 (htls/close! {:socket (:socket c)})
+                 (if (:message r)
+                   {:ok? true}
+                   {:ok? false :why (str "no answer to " contact/ping-rpc)}))
+               (catch Exception e
+                 {:ok? false :why (or (.getMessage e) (str e))})))
+           handle
+           (fn [{:keys [rpc request] :as call}]
+             (if-not (= rpc contact/rpc)
+               (do (println (str "rpc " rpc " -> refused, this is not a path a satellite serves"))
+                   {:error {:code 2 :message (str "unknown rpc: " rpc)}})
+               (let [req  (contact/read-check-in-request (proto.wire/decode request))
+                     _    (println (str "check-in from " (:address req)
+                                        " version=" (get-in req [:version :version])
+                                        " operator=" (get-in req [:operator :email])))
+                     ping (ping-back (:address req))]
+                 (println (str "dialled back " (:address req) " -> "
+                               (if (:ok? ping) "answered" (str "no: " (:why ping)))))
+                 {:response (contact/check-in-response
+                             (if (:ok? ping)
+                               {:ping-node-success true}
+                               {:ping-node-success false
+                                :ping-error-message
+                                (str "failed to ping storage node at address "
+                                     (:address req) ": " (:why ping))}))
+                  :stream (:stream call)})))
+           l (htls/listen {:port port :identity identity :verify-opts {}
+                           :expect-preamble htls/drpc-mux-header
+                           :on-connection
+                           (fn [{:keys [socket peer]}]
+                             (report peer expect)
+                             (rpc/serve-connection socket handle)
+                             (System/exit 0))
+                           :on-refused
+                           (fn [r] (println (str "FAIL refused: " (pr-str r)))
+                             (System/exit 1))})]
+       (println (str "listening " (:port l)))
+       (flush)
+       ((:accept l)))
+     :cljs
+     (do (println "satellite: JVM only — see the docstring")
+         (js/process.exit 2))))
+
 (defn run [[mode dir arg expect rpc-name payload]]
   (case mode
     "serve" (serve dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     "dial"  (dial dir arg expect)
     "call"  (call dir arg expect rpc-name payload)
     "check-in" (check-in dir arg expect (or rpc-name "127.0.0.1:28967"))
+    "satellite" (satellite dir #?(:clj (parse-long (or arg "0")) :cljs 0) expect)
     "node"  (node dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     (do (println (str "usage: serve <dir> <port> | dial <dir> <host:port> [expect-hex]"
                       " | call <dir> <host:port> <expect-hex> <rpc> <payload>"))
