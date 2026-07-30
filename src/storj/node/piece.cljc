@@ -122,6 +122,37 @@
     :v1 header-reserved-area
     (fail "unknown storage format version" {:version version})))
 
+(defn header-for
+  "The `PieceHeader` fields for a piece this node has just accepted.
+
+  What makes a V1 file self-describing: the uplink's hash, the uplink's
+  *signature* over that hash, and the order limit that authorised it. A node
+  that restarts has no memory of the upload, and this is how it can still
+  answer an audit — the header carries the uplink's own attestation, not the
+  node's word for it.
+
+  Which is why an unverified hash must not be written here. The signature in
+  this header is the one thing a later reader cannot check for itself without
+  the limit's key, so writing one that was never checked turns `finish-upload`
+  reporting `:hash-verified? false` into a file that looks proven. The caller
+  decides; `storj.node.transfer` refuses.
+
+  `creation-time` is seconds, and is the caller's — this namespace reads no
+  clock, for the same reason `storj.node.orders` does not."
+  [{:keys [hash hash-algorithm signature order-limit created-at]}]
+  (cond-> [(w/varint-field 1 (pb/enum-value pb/format-version :v1))]
+    hash        (conj (w/bytes-field 2 (vec hash)))
+    created-at  (conj (w/message-field 3 [(w/varint-field 1 created-at)]))
+    signature   (conj (w/bytes-field 4 (vec signature)))
+    order-limit (conj (w/message-field 5 order-limit))
+    hash-algorithm
+    (conj (w/varint-field 6 (pb/enum-value pb/piece-hash-algorithm hash-algorithm)))))
+
+(defn v1-file
+  "A complete V1 piece file: the 512-byte header area, then the body."
+  [header-fields body]
+  (into (encode-header header-fields) (vec body)))
+
 (defn header-fields
   "The interesting fields of a decoded `PieceHeader`, as data."
   [header-msg]

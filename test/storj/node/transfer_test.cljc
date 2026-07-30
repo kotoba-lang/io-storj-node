@@ -11,7 +11,11 @@
             [storj.node.bytes :as b]
             [storj.node.host.blobs :as blobs]
             [storj.node.pb :as pb]
+            [storj.node.piece :as piece]
+            [storj.node.piecestore-test :as fix]
             [storj.node.protocols :as p]
+            [storj.node.host.keys :as hk]
+            [storj.node.host.verify :as v]
             [storj.node.transfer :as tr]))
 
 (defn- unhex [s]
@@ -55,7 +59,9 @@
            :clock         (clock-at (- order-expiry 60))
            :verifier      (verifier true)
            :blobs         (blobs/in-memory)
-           :paths         (fn [id] (str "p/" (b/hex id)))}
+           ;; the version is part of the address: Storj tells V1 from V0 by
+           ;; filename suffix, and a node can hold both
+           :paths         (fn [id version] (str "p/" (b/hex id) (name version)))}
           over)))
 
 ;; ── the messages an uplink sends ────────────────────────────────────────────
@@ -121,7 +127,7 @@
       (is (= 1 (count (messages (:out r)))))
       (is (some :end (:out r))))
     (testing "and the bytes are there, in order"
-      (is (= body (p/-get (:blobs c) ((:paths c) piece-id)))))
+      (is (= body (p/-get (:blobs c) ((:paths c) piece-id :v0)))))
     (testing "with nothing left open"
       (is (empty? (:state r))))))
 
@@ -130,7 +136,7 @@
         r (feed c [(first-upload-msg [1 2 3])
                    (done-msg {:size 3 :id piece-id})])]
     (is (empty? (errors (:out r))))
-    (is (= [1 2 3] (p/-get (:blobs c) ((:paths c) piece-id))))))
+    (is (= [1 2 3] (p/-get (:blobs c) ((:paths c) piece-id :v0))))))
 
 (deftest the-node-answers-with-a-piece-hash-it-has-not-signed
   ;; an uplink reads this to learn the node accepted what it sent. It is
@@ -151,7 +157,7 @@
         r (feed c [(first-upload-msg [1 2 3])
                    (chunk-msg 3 [4 5])])]
     (is (seq (errors (:out r))))
-    (is (nil? (p/-get (:blobs c) ((:paths c) piece-id)))
+    (is (nil? (p/-get (:blobs c) ((:paths c) piece-id :v0)))
         "nothing was written on the way to finding out")))
 
 (deftest a-done-naming-another-piece-stores-nothing
@@ -159,14 +165,14 @@
         r (feed c [(first-upload-msg [1 2 3])
                    (done-msg {:size 3 :id (vec (repeat 32 0x99))})])]
     (is (seq (errors (:out r))))
-    (is (nil? (p/-get (:blobs c) ((:paths c) piece-id))))))
+    (is (nil? (p/-get (:blobs c) ((:paths c) piece-id :v0))))))
 
 (deftest a-declared-size-that-did-not-arrive-stores-nothing
   (let [c (ctx)
         r (feed c [(first-upload-msg [1 2 3])
                    (done-msg {:size 99 :id piece-id})])]
     (is (seq (errors (:out r))))
-    (is (nil? (p/-get (:blobs c) ((:paths c) piece-id))))))
+    (is (nil? (p/-get (:blobs c) ((:paths c) piece-id :v0))))))
 
 (deftest a-second-limit-mid-stream-is-refused
   ;; ignoring it would leave two readings of this stream disagreeing about
@@ -179,11 +185,12 @@
 ;; ── downloading ─────────────────────────────────────────────────────────────
 
 (defn- stored
-  "A context whose store already holds `body` for this piece."
-  [body]
-  (let [c (ctx)]
-    (p/-put (:blobs c) ((:paths c) piece-id) body)
-    c))
+  "A context whose store already holds `body` for this piece, as a V0 body."
+  ([body] (stored body :v0))
+  ([body version]
+   (let [c (ctx)]
+     (p/-put (:blobs c) ((:paths c) piece-id version) body)
+     c)))
 
 (deftest a-download-comes-back-in-several-messages
   (let [body (vec (range 100))
@@ -239,6 +246,113 @@
   (let [c (stored (vec (range 10)))
         r (feed c [(download-msg 0 0)] tr/download-rpc)]
     (is (seq (errors (:out r))))))
+
+(defn- verified-ctx
+  "A context that really verifies, for the Go-signed fixtures.
+
+  `storj.node.piecestore-test` owns them: `gen_piecestore.go` signed that
+  `done` with a real piece key and put the matching public key in the limit.
+  Borrowed rather than copied — a second hex blob that has to stay in step
+  with the generator is a second thing to get wrong."
+  []
+  {:node-id       fix/storage-node-id
+   :satellite-key fix/satellite-spki
+   :algorithm     :ecdsa-sha256
+   :verifier      v/verifier
+   :clock         (reify p/IClock (-now-seconds [_] (dec fix/expiration-unix)))
+   :blobs         (blobs/in-memory)
+   :paths         (fn [id version] (str "p/" (b/hex id) (name version)))})
+
+(def ^:private fixture-piece-id
+  "The piece the Go fixtures name — read from the limit rather than pasted."
+  (pb/get-bytes (pb/get-msg (w/decode fix/upload-first)
+                            pb/piece-upload-request :limit)
+                pb/order-limit :piece-id))
+
+(defn- run-fixture-upload [c]
+  ;; raw bytes: `tr/message` decodes `:data` itself, and handing it an
+  ;; already-decoded message is bit arithmetic on a map
+  (feed c [fix/upload-first fix/upload-chunk-1
+           fix/upload-chunk-2 fix/upload-done]))
+
+(deftest a-verified-upload-is-stored-as-a-v1-piece-file
+  (let [c (verified-ctx)
+        r (run-fixture-upload c)]
+    (is (empty? (errors (:out r))) (pr-str (errors (:out r))))
+    (is (some? (p/-get (:blobs c) ((:paths c) fixture-piece-id :v1)))
+        "written to the .sj1 address")
+    (is (nil? (p/-get (:blobs c) ((:paths c) fixture-piece-id :v0)))
+        "and not to the bare one")
+    (let [blob (p/-get (:blobs c) ((:paths c) fixture-piece-id :v1))
+          hdr  (piece/header-fields (piece/decode-header blob))]
+      (is (= :v1 (:format-version hdr)))
+      (is (some? (:signature hdr))
+          "the uplink's signature — what makes the file self-describing")
+      (is (some? (:order-limit hdr)))
+      (is (some? (:hash hdr)))
+      (testing "and the body sits after the 512-byte header area"
+        (is (= 512 (piece/body-offset :v1)))
+        (is (= (- (count blob) 512)
+               (pb/get-varint (pb/get-msg (w/decode fix/upload-done)
+                                          pb/piece-upload-request :done)
+                              pb/piece-hash :piece-size)))))))
+
+(deftest an-unverified-upload-is-stored-as-a-body
+  ;; the header carries a signature a later reader cannot check without the
+  ;; limit's key, so one built from an unverified hash is a file that looks
+  ;; proven. Stored, but as V0.
+  (let [c (ctx)
+        r (feed c [(first-upload-msg [1 2 3])
+                   (done-msg {:size 3 :id piece-id})])]
+    (is (empty? (errors (:out r))))
+    (is (some? (p/-get (:blobs c) ((:paths c) piece-id :v0))))
+    (is (nil? (p/-get (:blobs c) ((:paths c) piece-id :v1))))))
+
+(deftest a-v1-piece-is-read-past-its-header
+  (let [c    (verified-ctx)
+        _    (run-fixture-upload c)
+        blob (p/-get (:blobs c) ((:paths c) fixture-piece-id :v1))]
+    (is (> (count blob) 512))
+    (is (= (vec (drop (piece/body-offset :v1) blob))
+           (vec (drop 512 blob)))
+        "body-offset :v1 is the header area, not a guess")))
+
+(deftest the-node-signs-its-own-piece-hash
+  "What a node tells an uplink it accepted.
+
+  This signs and verifies through the real crypto rather than against a Go
+  fixture, and what that does and does not prove is worth being exact about.
+  The *encoding* is already held to Go: `encode-piece-hash-for-signing` is the
+  same function the uplink-signature test checks against a signature
+  `gen_piecestore.go` produced. ECDSA signing is already held to Go too —
+  `verify_minted.go` loads identities this library signed. What is new here is
+  only their composition, and that is what this covers."
+  (let [{:keys [private public-spki]} (hk/generate-keypair)
+        c (assoc (verified-ctx) :signer hk/key-material :private-key private)
+        r (run-fixture-upload c)]
+    (is (empty? (errors (:out r))) (pr-str (errors (:out r))))
+    (let [resp (w/decode (first (messages (:out r))))
+          done (pb/get-msg resp pb/piece-upload-response :done)
+          sig  (pb/get-bytes done pb/piece-hash :signature)]
+      (is (some? sig) "the node signed its response")
+      (testing "and the signature is over the signing encoding, not the message"
+        (is (p/-verify v/verifier :ecdsa-sha256 public-spki
+                       (pb/encode-piece-hash-for-signing done)
+                       sig)))
+      (testing "and not over the response, which carries the signature itself"
+        ;; the distinction only bites in this direction: at signing time the
+        ;; hash has no signature, so the two encodings coincide — see the
+        ;; comment in `sign-piece-hash`. A verifier handed the whole `done`
+        ;; is checking a signature over bytes that include it.
+        (is (not (p/-verify v/verifier :ecdsa-sha256 public-spki
+                            (w/encode done) sig)))))))
+
+(deftest with-no-signer-the-response-is-unsigned-rather-than-faked
+  (let [c (verified-ctx)
+        r (run-fixture-upload c)
+        done (pb/get-msg (w/decode (first (messages (:out r))))
+                         pb/piece-upload-response :done)]
+    (is (nil? (pb/get-bytes done pb/piece-hash :signature)))))
 
 ;; ── the round trip ──────────────────────────────────────────────────────────
 

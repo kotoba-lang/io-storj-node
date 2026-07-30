@@ -118,12 +118,22 @@ messages and comes back in three, byte for byte, over real TLS and real DRPC
   that it says so. Signing one would mean this library's uplink signing its
   own upload for this library's node to check — weaker evidence than Go's
   signature, not stronger.
-- **The node's own `PieceHash` is unsigned.** An uplink reads it to learn the
-  node accepted what it sent. Signing needs this node's key through
-  `IKeyMaterial`. Sending an unsigned one is honest; fabricating one is not.
-- **What lands in the store is a body, not a piece file.** Storage format V0.
-  A real node writes V1 — a 512-byte header carrying the uplink's signed hash,
-  which the node can now check but does not yet persist.
+- **The node signs its own `PieceHash`** with its identity key. Not the CA
+  key — the node id comes from the CA and every *signature* comes from the
+  leaf (`SignerFromFullIdentity` uses `identity.Key`,
+  `SigneeFromPeerIdentity` uses `identity.Leaf.PublicKey`). Getting that
+  backwards gives a signature that is present, a key that is present, and a
+  verification that fails for no visible reason, which is how it was found.
+  `admit-chain` now hands back `:signing-key` so a caller that admitted a
+  chain does not have to choose between the two certificates again. CI has
+  the uplink check the node's signature against the key the handshake gave
+  it.
+- **A verified piece is stored as a V1 file**, header and body; an unverified
+  one as a body (V0). The header carries the uplink's signature, which a
+  later reader cannot check without the limit's key — so a header built from
+  an unverified hash is a file that looks proven and is not. Reads try `.sj1`
+  then the bare path, because a node can hold both and looking only for the
+  format this build writes would report an older piece as `no such piece`.
 - **A piece is buffered whole.** `IBlobStore/-put` takes a whole blob, so the
   streaming is real up to the store and stops there. That is a limit of that
   protocol, not of the transport.

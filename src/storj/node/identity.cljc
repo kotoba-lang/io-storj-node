@@ -261,7 +261,18 @@
     {:ok?        (empty? problems)
      :reasons    problems
      :node-id    nid
-     :difficulty diff}))
+     :difficulty diff
+     ;; the **leaf's** public key, which is what this peer signs messages
+     ;; with. Not the CA's: the node id comes from the CA and every signature
+     ;; comes from the leaf — `SignerFromFullIdentity` uses `identity.Key`
+     ;; and `SigneeFromPeerIdentity` uses `identity.Leaf.PublicKey`. Handing
+     ;; back the CA key here produced a signature that was present, a key that
+     ;; was present, and a verification that failed for no visible reason.
+     ;;
+     ;; Here because this function has already parsed the chain; a caller
+     ;; hunting for the key would be parsing it a second time and choosing
+     ;; between the same two certificates with less context.
+     :signing-key (:spki-der (get certs leaf-index))}))
 
 ;; ── identity files ──────────────────────────────────────────────────────────
 

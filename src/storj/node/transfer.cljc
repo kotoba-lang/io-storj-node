@@ -30,17 +30,25 @@
   there. A node that must not hold a piece in memory needs `-put` to grow an
   offset, and then this changes in one place.
 
-  ## What lands in the store is a body, not a piece file
+  ## V1 when the hash was checked, V0 when it was not
 
-  An upload writes the payload and nothing else, which is storage format
-  **V0** — `piece/body-offset :v0` is zero and reads start there. A real node
-  writes V1: a 512-byte reserved area holding a `PieceHeader` with the
-  uplink's signed hash, so a restarted node can still prove what it holds.
-  `piece/encode-header` can build one and nothing here calls it, because the
-  hash it would carry is the one `finish-upload` reports as
-  `:hash-verified? false`. Writing an unverified hash into a header a node
-  later offers as proof is worse than not writing the header. `ctx` takes
-  `:format` so a caller that does write V1 is read correctly.
+  A V1 piece file is a 512-byte header area then the body, and the header
+  carries the uplink's hash, the uplink's *signature* over it, and the order
+  limit. That is what lets a restarted node answer an audit: the attestation
+  is the uplink's own, not the node's word for it.
+
+  Which is exactly why an unverified hash must not be written into one. The
+  signature in that header is the one thing a later reader cannot check
+  without the limit's key, so a header built from a hash nobody verified is a
+  file that looks proven and is not. So V1 is written when
+  `finish-upload` reports `:hash-verified? true`, and a body — V0 — when it
+  does not. The piece is still stored either way: refusing it would be
+  refusing pieces over a signature nobody claimed to send.
+
+  The two formats are told apart by filename, `.sj1` versus nothing, which is
+  `piece/blob-path`'s `version` argument. A read tries V1 then V0, because a
+  node really can hold both and looking only for the format this build writes
+  would report an older piece as `no such piece` — which reads as data loss.
 
   ## A refused transfer is an error on that stream, not a closed connection
 
@@ -91,29 +99,77 @@
 
 ;; ── uploading ───────────────────────────────────────────────────────────────
 
+(defn- sign-piece-hash
+  "The node's own signature over its `PieceHash`, or nil.
+
+  `signing.SignPieceHash` signs the same `PieceHashSigning` bytes the uplink
+  does — `encode-piece-hash-for-signing` — but with the node's *identity* key
+  and ECDSA-SHA256, not the piece key and ed25519. Two signatures over the
+  same encoding with different keys and different algorithms, which is why
+  the encoder is shared and the signing is not.
+
+  nil when the node has no signer configured. An unsigned response is honest
+  about what happened; a fabricated one is not, and an uplink checks this to
+  learn the node accepted what it thinks it sent."
+  [{:keys [signer private-key]} fields]
+  ;; For *these* fields the encoder is a no-op: it drops the signature and a
+  ;; zero timestamp, and a hash being signed has neither yet — so `w/encode`
+  ;; alone would produce the same bytes, and a control that swaps them cannot
+  ;; fail. Said rather than left as a guard someone later assumes is load
+  ;; bearing. It is still the right call: this is the function that defines
+  ;; what a piece hash signature covers, the verifying side genuinely needs it
+  ;; (there the signature *is* present), and the two directions agreeing by
+  ;; construction is worth more than saving an encode.
+  (when (and signer private-key)
+    (p/-sign signer private-key :ecdsa-sha256
+             (pb/encode-piece-hash-for-signing (w/decode (w/encode fields))))))
+
 (defn- upload-response
   "`PieceUploadResponse`. The node's own `done` — a `PieceHash` naming the
-  piece and its size.
-
-  Unsigned, and that is a real gap rather than an omission: an uplink checks
-  this signature to know the node accepted what it thinks it sent. Signing
-  needs this node's key through `IKeyMaterial`, the same seam minting uses.
-  Sending an unsigned one is honest about what has happened; sending a
-  fabricated signature would not be."
-  [{:keys [piece-id size hash hash-algorithm]}]
+  piece and its size, signed with this node's identity key when it has one."
+  [ctx {:keys [piece-id size hash hash-algorithm]}]
   ;; the numbers are `pb/piece-hash`, and they are not in order: 2 is the
   ;; hash, 3 is the signature, and the size is 4. Writing the size into 2 —
   ;; which is what the first draft of this did — produces a message that
   ;; encodes cleanly and tells an uplink its piece hashed to a number.
-  (w/encode
-   [(w/message-field 1 (cond-> []
-                         piece-id (conj (w/bytes-field 1 (vec piece-id)))
-                         hash     (conj (w/bytes-field 2 (vec hash)))
-                         size     (conj (w/varint-field 4 size))
-                         hash-algorithm
-                         (conj (w/varint-field 6 (pb/enum-value
-                                                  pb/piece-hash-algorithm
-                                                  hash-algorithm)))))]))
+  (let [fields (cond-> []
+                 piece-id (conj (w/bytes-field 1 (vec piece-id)))
+                 hash     (conj (w/bytes-field 2 (vec hash)))
+                 size     (conj (w/varint-field 4 size))
+                 hash-algorithm
+                 (conj (w/varint-field 6 (pb/enum-value
+                                          pb/piece-hash-algorithm
+                                          hash-algorithm))))
+        sig    (sign-piece-hash ctx fields)]
+    ;; the signature goes in last, and is not part of what was signed —
+    ;; `encode-piece-hash-for-signing` drops field 3 before hashing, so a
+    ;; signature built over `fields` and then appended to `fields` is
+    ;; consistent with what a verifier will recompute
+    (w/encode
+     [(w/message-field 1 (cond-> fields
+                           sig (conj (w/bytes-field 3 (vec sig)))))])))
+
+(defn- path-of
+  "Where a piece of this storage format lives.
+
+  Storj tells the two apart by filename: V1 ends in `.sj1` and V0 has no
+  suffix at all, which `piece/blob-path` already models. A node may hold both
+  — pieces predate the format — so the version is part of the address rather
+  than a node-wide setting."
+  [ctx piece-id version]
+  ((:paths ctx) piece-id version))
+
+(defn- read-blob
+  "A stored piece and where its body starts, V1 first.
+
+  Both are tried because a node really can hold both, and because trying only
+  the format this build writes would make every piece written by an earlier
+  one invisible — reported as `no such piece`, which reads as data loss."
+  [ctx piece-id]
+  (or (when-let [b (p/-get (:blobs ctx) (path-of ctx piece-id :v1))]
+        {:blob b :body (piece/body-offset :v1) :format :v1})
+      (when-let [b (p/-get (:blobs ctx) (path-of ctx piece-id :v0))]
+        {:blob b :body (piece/body-offset :v0) :format :v0})))
 
 (defn- begin-upload [state ctx stream msg]
   (let [r (ps/begin-upload msg ctx)]
@@ -131,12 +187,30 @@
     (let [r (ps/finish-upload upload msg)]
       (if-not (:ok? r)
         (refuse state stream (:reasons r))
-        (do
+        (let [;; V1 only when the uplink's signature was actually checked.
+              ;; The header carries that signature, and it is the one thing a
+              ;; later reader cannot check without the limit's key — so a
+              ;; header built from an unverified hash is a file that looks
+              ;; proven and is not. An unverified piece is still stored,
+              ;; because refusing it would be refusing pieces over a
+              ;; signature nobody claimed to send; it is stored as a body.
+              v1?  (:hash-verified? r)
+              fmt  (if v1? :v1 :v0)
+              blob (if v1?
+                     (piece/v1-file
+                      (piece/header-for
+                       {:hash (:hash r)
+                        :hash-algorithm (:hash-algorithm r)
+                        :signature (:signature r)
+                        :order-limit (:limit (:state r))
+                        :created-at (some-> (:clock ctx) p/-now-seconds)})
+                      buffer)
+                     buffer)]
           ;; the store is reached only once every rule has answered yes
-          (p/-put (:blobs ctx) ((:paths ctx) (:piece-id r)) buffer)
+          (p/-put (:blobs ctx) (path-of ctx (:piece-id r) fmt) blob)
           {:state (dissoc state stream)
-           :out   [{:message (upload-response r)} {:end true}]
-           :stored r})))
+           :out   [{:message (upload-response ctx r)} {:end true}]
+           :stored (assoc r :format fmt)})))
     (let [r (ps/accept-chunk upload msg)]
       (if-not (:ok? r)
         (refuse state stream (:reasons r))
@@ -165,7 +239,7 @@
   (let [r (ps/begin-download msg ctx)]
     (if-not (:ok? r)
       (refuse state stream (:reasons r))
-      (let [blob (p/-get (:blobs ctx) ((:paths ctx) (:piece-id r)))]
+      (let [{:keys [blob body]} (read-blob ctx (:piece-id r))]
         (if (nil? blob)
           ;; the limit authorised it and this node does not have it. Not a
           ;; permission answer — a satellite reading this one as refusal
@@ -173,8 +247,7 @@
           {:state (dissoc state stream)
            :out   [{:error {:code transfer-error-code
                             :message "no such piece"}}]}
-          (let [body   (piece/body-offset (:format ctx :v0))
-                want   (or (pb/get-varint msg pb/piece-download-request
+          (let [want   (or (pb/get-varint msg pb/piece-download-request
                                           :maximum-chunk-size)
                            default-chunk-size)
                 size   (max 1 (min want (:size r)))

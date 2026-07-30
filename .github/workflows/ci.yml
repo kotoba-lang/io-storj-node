@@ -292,7 +292,10 @@ jobs:
           # verify must not look like one that verified it. The signature
           # path itself is held to a real Go-generated signature in
           # piecestore_test.
-          grep -q 'stored 300 bytes, hash-verified? false' /tmp/n.log
+          grep -q 'stored 300 bytes, hash-verified? false, format v0' /tmp/n.log
+          # and the other direction: the node signs its response with its leaf
+          # key and the uplink checks it against the key the handshake gave it
+          grep -q 'ok   the node signed its response, and it verifies' /tmp/uplink.out
       - name: And it refuses what the real satellite refused
         run: |
           set -euo pipefail
