@@ -27,6 +27,7 @@
             [proto.wire :as w]
             [storj.node.pb :as pb]
             [storj.node.protocols :as p]
+            [storj.node.host.verify :as v]
             [storj.node.transfer :as tr]
             [storj.node.host.tls :as htls]
             [storj.node.identity :as ident]
@@ -273,7 +274,9 @@
   [dir port expect]
   (let [identity (load-identity dir)
         satellite (vec (repeat 32 1))
-        paths     (fn [id] (piece/blob-path satellite id))
+        ;; the version is part of the address — .sj1 for V1, nothing for V0
+        paths     (fn ([id] (piece/blob-path satellite id))
+                    ([id version] (piece/blob-path satellite id version)))
         held      (mapv (fn [i] (mod (+ 0x11 (* i 7)) 256)) (range 32))
         store     (blobs/in-memory)
         node-id   (ident/node-id (ident/certificate (second (:chain identity))))
@@ -285,6 +288,9 @@
         ;; limit) is really applied, and the verifier is the one seam a
         ;; harness has to stub.
         xctx      {:node-id  node-id
+                   ;; the node signs its own PieceHash with its identity key
+                   :signer      hk/key-material
+                   :private-key (:private-key identity)
                    ;; `admit` refuses without a key as well as without a
                    ;; verifier — a stub verifier and no key is a node that
                    ;; skipped the check while looking like it did not
@@ -326,7 +332,7 @@
                 ;; Go-generated one in piecestore_test.
                 (when-let [s (:stored r)]
                   (println (str "stored " (:size s) " bytes, hash-verified? "
-                                (:hash-verified? s))))
+                                (:hash-verified? s) ", format " (name (:format s)))))
                 r)))]
       #?(:clj
          (let [l (htls/listen {:port port :identity identity :verify-opts {}
@@ -513,7 +519,20 @@
          (when (:error up)
            (println (str "FAIL upload: " (:message (:error up))))
            (System/exit 1))
-         (let [done (pb/get-msg (w/decode (:message up)) pb/piece-upload-response :done)]
+         (let [done (pb/get-msg (w/decode (:message up)) pb/piece-upload-response :done)
+               sig  (pb/get-bytes done pb/piece-hash :signature)
+               spki (:signing-key (:peer c1))]
+           ;; what an uplink actually does with the node's response: check it
+           ;; was signed by the node it dialled. The key comes from the chain
+           ;; the handshake already admitted, not from anywhere on disk.
+           (if (and sig spki
+                    (p/-verify v/verifier :ecdsa-sha256 spki
+                               (pb/encode-piece-hash-for-signing done) sig))
+             (println "ok   the node signed its response, and it verifies")
+             (do (println (str "FAIL the node's signature did not verify"
+                               " (signature " (if sig "present" "absent")
+                               ", key " (if spki "present" "absent") ")"))
+                 (System/exit 1)))
            (println (str "upload accepted: " (pb/get-varint done pb/piece-hash :piece-size)
                          " bytes, piece "
                          (subs (b/hex (pb/get-bytes done pb/piece-hash :piece-id)) 0 12) "…"))
