@@ -96,7 +96,7 @@ list below is what is actually absent, checked against the source rather than
 remembered — an earlier version of this section claimed check-in and retain
 were both implemented and missing.
 
-*A piece moves, and is not yet stored the way a node stores one.*
+*A piece moves, and is stored as a piece file when its hash was checked.*
 
 `storj.node.transfer` drives `piecestore` one message at a time and
 `host.rpc/serve-connection` carries it. A 300-byte piece goes up in four
