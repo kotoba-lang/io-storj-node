@@ -73,6 +73,11 @@ jobs:
           #    means deleting different pieces.
           (cd testdata && go run gen_bloom.go > /tmp/bloom-vectors.edn)
           diff -u testdata/bloom-vectors.edn /tmp/bloom-vectors.edn
+          # 7. the upload conversation. Signing is randomised so this cannot be
+          #    diffed; what is checked is that storj.io/common still builds
+          #    messages the state machine admits, which the suite asserts
+          #    against the recorded ones.
+          (cd testdata && go run gen_piecestore.go > /dev/null)
           (cd testdata && go run gen_identity.go -pem)
           git diff --exit-code testdata/identity.cert
           for h in $(grep -o '"[0-9a-f]\{16,\}"' testdata/sigs.edn | tr -d '"'); do

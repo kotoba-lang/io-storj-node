@@ -28,6 +28,7 @@ Storj a node is.
 | `storj.node.contact` | Check-in — the first thing a node says. |
 | `storj.node.retain` | Which pieces to keep, and which to keep anyway. |
 | `storj.node.service` | What a node answers when it is asked. |
+| `storj.node.piecestore` | Storing a piece, and giving it back. |
 | `storj.node.host.blobs` | An `IBlobStore` that keeps everything in memory. |
 | `storj.node.host.rpc` | A DRPC call on a verified connection — the last joint. |
 | `storj.node.bytes` | The one file that knows which runtime it is on. |
@@ -56,6 +57,11 @@ Implemented and tested on two runtimes:
   operator actually needs — almost nobody mints an identity, and everybody who
   has one already has four files. `identity.FullIdentityFromPEM` loads what
   this writes, and what this renders is byte-identical to Go's own PEM.
+- **What an upload and a download are allowed to be.** Chunks contiguous from
+  zero, the order limit enforced as the bytes arrive rather than after, a
+  second limit refused rather than ignored, and a `done` that must name the
+  piece the limit named and the size that actually arrived. Driven by a real
+  upload conversation built with `storj.io/common`.
 - **Retain.** The bloom filter a satellite sends, and the decision under it.
   Checked against every answer Storj's own filter gives for the same ids —
   not a round trip, because a filter that decodes is not a filter that agrees.
@@ -92,11 +98,14 @@ were both implemented and missing.
 
 *The node cannot store or serve a piece.*
 
-- **`Upload` and `Download`.** These are the node's actual job. The transport
-  under them exists now — `kotoba-lang/drpc` grew streams — and nothing here
-  uses it: there is no `PieceUploadRequest` schema, no handler, and
-  `storj.node.orders/admit` decides whether to honour an order limit while
-  nothing calls it from a request.
+- **Nothing serves `Upload` or `Download` yet.** `storj.node.piecestore`
+  decides what an upload and a download are allowed to be — and is not wired
+  to `storj.node.service`, so no stream reaches it. The decisions exist; the
+  handler does not.
+- **The uplink's signature on `done` is not checked.** `finish-upload` reports
+  `:hash-verified? false` rather than implying otherwise. The piece public key
+  is in the order limit and the verifier is the same one everything else uses;
+  joining them is the next thing.
 
 *The transport can do more than this repo asks of it.*
 
