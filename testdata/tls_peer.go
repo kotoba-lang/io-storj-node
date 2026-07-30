@@ -36,6 +36,21 @@ import (
 	"storj.io/drpc/drpcserver"
 )
 
+// checkInRPC is read from storj.io/common's own DRPC description rather than
+// written here. This file had "/node.Node/CheckIn" hardcoded, the library had
+// the same string, and a test compared the two — three copies of one guess,
+// which a real satellite rejected as an unknown rpc. Deriving it means this
+// harness cannot agree with a mistake.
+var checkInRPC = func() string {
+	d := pb.DRPCNodeDescription{}
+	for i := 0; i < d.NumMethods(); i++ {
+		if rpc, _, _, _, ok := d.Method(i); ok && strings.HasSuffix(rpc, "/CheckIn") {
+			return rpc
+		}
+	}
+	panic("no CheckIn method in pb.DRPCNodeDescription")
+}()
+
 // greeting is exchanged after the handshake so that both peers have to finish
 // it, rather than one of them merely believing it did.
 const greeting = "storj\n"
@@ -199,7 +214,7 @@ func (echo) HandleRPC(stream drpc.Stream, rpc string) error {
 	// with storj.io/common's own generated code and answer with a real
 	// CheckInResponse. A client that gets this back has had its request
 	// understood by a satellite's parser, not merely echoed.
-	if rpc == "/node.Node/CheckIn" {
+	if rpc == checkInRPC {
 		var req pb.CheckInRequest
 		if err := pb.Unmarshal(in.data, &req); err != nil {
 			return err
