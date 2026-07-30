@@ -96,16 +96,26 @@ list below is what is actually absent, checked against the source rather than
 remembered — an earlier version of this section claimed check-in and retain
 were both implemented and missing.
 
-*The node cannot store or serve a piece.*
+*A piece moves, and is not yet stored the way a node stores one.*
 
-- **Nothing serves `Upload` or `Download` yet.** `storj.node.piecestore`
-  decides what an upload and a download are allowed to be — and is not wired
-  to `storj.node.service`, so no stream reaches it. The decisions exist; the
-  handler does not.
+`storj.node.transfer` drives `piecestore` one message at a time and
+`host.rpc/serve-connection` carries it. A 300-byte piece goes up in four
+messages and comes back in three, byte for byte, over real TLS and real DRPC
+— both transfers on one connection, on two streams. What is still missing:
+
 - **The uplink's signature on `done` is not checked.** `finish-upload` reports
   `:hash-verified? false` rather than implying otherwise. The piece public key
   is in the order limit and the verifier is the same one everything else uses;
   joining them is the next thing.
+- **The node's own `PieceHash` is unsigned.** An uplink reads it to learn the
+  node accepted what it sent. Signing needs this node's key through
+  `IKeyMaterial`. Sending an unsigned one is honest; fabricating one is not.
+- **What lands in the store is a body, not a piece file.** Storage format V0.
+  A real node writes V1 — a 512-byte header carrying the uplink's signed hash
+  — and the hash it would carry is the one above that has not been checked.
+- **A piece is buffered whole.** `IBlobStore/-put` takes a whole blob, so the
+  streaming is real up to the store and stops there. That is a limit of that
+  protocol, not of the transport.
 
 *The transport can do more than this repo asks of it.*
 
@@ -177,8 +187,9 @@ because it speaks plain TLS and serves whatever rpc name it is handed:
   `secureConnect`. The wrong event fails silently: the handshake completes and
   nothing is ever served.
 
-**Beyond introduction, nothing has been tried.** No piece has been uploaded to
-or downloaded from anything, by this code or to it.
+**Beyond introduction, nothing has been tried against a real satellite.**
+Pieces move between this library's own node and its own uplink, in CI; no
+piece has been uploaded to or downloaded from anything on the Storj network.
 
 ## Verification
 

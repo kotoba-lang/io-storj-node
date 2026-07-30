@@ -24,6 +24,10 @@
             [storj.node.bytes :as b]
             [storj.node.host.rpc :as rpc]
             [storj.node.host.keys :as hk]
+            [proto.wire :as w]
+            [storj.node.pb :as pb]
+            [storj.node.protocols :as p]
+            [storj.node.transfer :as tr]
             [storj.node.host.tls :as htls]
             [storj.node.identity :as ident]
             #?(:cljs ["node:fs" :as fs])))
@@ -272,14 +276,48 @@
         paths     (fn [id] (piece/blob-path satellite id))
         held      (mapv (fn [i] (mod (+ 0x11 (* i 7)) 256)) (range 32))
         store     (blobs/in-memory)
-        state     {:blobs store :paths paths}]
+        node-id   (ident/node-id (ident/certificate (second (:chain identity))))
+        state     {:blobs store :paths paths}
+        ;; what `orders/admit` reads. The satellite signature is accepted
+        ;; here because producing one means holding a satellite's key —
+        ;; every *other* rule (is this addressed to me, has it expired, is
+        ;; the action the one being asked for, is the range inside the
+        ;; limit) is really applied, and the verifier is the one seam a
+        ;; harness has to stub.
+        xctx      {:node-id  node-id
+                   ;; `admit` refuses without a key as well as without a
+                   ;; verifier — a stub verifier and no key is a node that
+                   ;; skipped the check while looking like it did not
+                   :satellite-key (vec (repeat 32 0x02))
+                   :verifier (reify p/IVerifier (-verify [_ _ _ _ _] true))
+                   :clock    (reify p/IClock
+                               (-now-seconds [_]
+                                 #?(:clj (quot (System/currentTimeMillis) 1000)
+                                    :cljs (js/Math.floor (/ (js/Date.now) 1000)))))}]
     (rpc/-put-seed store (paths held))
     (let [handle (fn [call]
                    (let [r (svc/handle state call)]
                      (println (str "rpc " (:rpc call) " -> "
                                    (if (:error r) (str "error " (:message (:error r)))
                                        (str (count (:response r)) " bytes"))))
-                     r))]
+                     r))
+          ;; the streaming half. `serve-connection` routes messages here and
+          ;; calls there, and `transfer/streaming?` is what keeps an upload
+          ;; from falling through to `service/handle` and being answered
+          ;; `unimplemented`.
+          xfers (atom (tr/transfers))
+          on-message
+          (fn [{:keys [rpc] :as m}]
+            (if-not (or (tr/streaming? rpc) (get @xfers (:stream m)))
+              {:out []}
+              (let [r (tr/message @xfers (merge state xctx) m)]
+                (reset! xfers (:state r))
+                (doseq [o (:out r)]
+                  (println (str "stream " (:stream m) " " rpc " -> "
+                                (cond (:error o) (str "error " (:message (:error o)))
+                                      (:end o)   "end"
+                                      :else      (str (count (:message o)) " bytes")))))
+                r)))]
       #?(:clj
          (let [l (htls/listen {:port port :identity identity :verify-opts {}
                                ;; a satellite dials back through the same
@@ -290,7 +328,7 @@
                                :on-connection
                                (fn [{:keys [socket peer]}]
                                  (report peer expect)
-                                 (rpc/serve-connection socket handle)
+                                 (rpc/serve-connection socket handle on-message)
                                  (System/exit 0))
                                :on-refused
                                (fn [r] (println (str "FAIL refused: " (pr-str r)))
@@ -306,7 +344,7 @@
                                   :on-connection
                                   (fn [{:keys [socket peer]}]
                                     (report peer expect)
-                                    (-> (rpc/serve-connection socket handle)
+                                    (-> (rpc/serve-connection socket handle on-message)
                                         (.then (fn [_] (js/process.exit 0)))))
                                   :on-refused
                                   (fn [r] (println (str "FAIL refused: " (pr-str r)))
@@ -398,12 +436,115 @@
      (do (println "satellite: JVM only — see the docstring")
          (js/process.exit 2))))
 
+(defn- uplink-limit
+  "An `OrderLimit` addressed to `node-id`, for `action`.
+
+  Not signed by anything. `orders/admit` checks the signature through an
+  `IVerifier`, and the node in this harness accepts whatever it is given —
+  which is stated where that verifier is built. Every other field is real and
+  every other rule really applies, so a limit naming the wrong node or the
+  wrong action is refused here exactly as it would be by a node that could
+  check the signature."
+  [node-id piece-id action expiry]
+  (w/encode
+   [(w/bytes-field 1 (vec (repeat 16 0x01)))          ; serial number
+    (w/bytes-field 2 (vec (repeat 32 0x02)))          ; satellite id
+    (w/bytes-field 4 (vec node-id))                   ; storage node id
+    (w/bytes-field 5 (vec piece-id))                  ; piece id
+    (w/varint-field 6 1048576)                        ; limit: 1 MiB
+    (w/varint-field 7 (pb/enum-value pb/piece-action action))
+    (w/message-field 9 [(w/varint-field 1 expiry)])   ; order expiration
+    (w/bytes-field 10 (vec (repeat 8 0xde)))]))       ; satellite signature
+
+(defn uplink
+  "Upload a piece to a node and read it back, over real TLS and real DRPC.
+
+  This is the direction the library never had: `piecestore` decided what an
+  upload was allowed to be long before anything could carry one, and
+  `serve-connection` read `:messages` off the wire and dropped them — which
+  was invisible, because a unary call also produces a message and its `:calls`
+  entry arrives right behind it. Only a stream that never closes shows it.
+
+  Sends limit, three chunks and `done`; then asks for the whole piece back
+  and compares. A node that stored nothing, stored the wrong bytes, or
+  answered the first chunk and stopped all fail here and in different ways."
+  [dir addr expect]
+  #?(:clj
+     (let [identity (load-identity dir)
+           [host port] (str/split addr #":")
+           connect (fn []
+                     (htls/connect {:host host :port (parse-long port)
+                                    :identity identity
+                                    :verify-opts (cond-> {} expect
+                                                   (assoc :expected-node-id (unhex expect)))
+                                    :preamble (when (getenv "STORJ_MUX")
+                                                htls/drpc-mux-header)}))
+           node-id  (unhex expect)
+           piece-id (vec (repeat 32 0x5a))
+           body     (mapv #(mod (* % 7) 256) (range 300))
+           expiry   (+ 3600 (quot (System/currentTimeMillis) 1000))
+           chunk    (fn [off bs]
+                      (w/encode [(w/message-field 3 [(w/varint-field 1 off)
+                                                     (w/bytes-field 2 (vec bs))])]))
+           c1 (connect)]
+       (report (:peer c1) expect)
+       ;; both transfers on one connection, on different streams. A node that
+       ;; only works when each stream gets its own socket has not multiplexed
+       ;; anything, and a real uplink does not reconnect between the two.
+       (let [up (rpc/stream-call
+                 (:socket c1)
+                 {:rpc tr/upload-rpc
+                  :messages [(w/encode [(w/bytes-field 1 (uplink-limit node-id piece-id :put expiry))])
+                             (chunk 0 (subvec body 0 128))
+                             (chunk 128 (subvec body 128 256))
+                             (chunk 256 (subvec body 256))
+                             (w/encode [(w/message-field 4 [(w/bytes-field 1 piece-id)
+                                                            (w/varint-field 4 300)])])]})]
+         (when (:error up)
+           (println (str "FAIL upload: " (:message (:error up))))
+           (System/exit 1))
+         (let [done (pb/get-msg (w/decode (:message up)) pb/piece-upload-response :done)]
+           (println (str "upload accepted: " (pb/get-varint done pb/piece-hash :piece-size)
+                         " bytes, piece "
+                         (subs (b/hex (pb/get-bytes done pb/piece-hash :piece-id)) 0 12) "…"))
+           (when-not (= 300 (pb/get-varint done pb/piece-hash :piece-size))
+             (println "FAIL the node acknowledged a different size") (System/exit 1))))
+       (let [down (rpc/stream-call
+                   (:socket c1)
+                   {:rpc tr/download-rpc
+                    :stream 2
+                    :messages [(w/encode [(w/bytes-field 1 (uplink-limit node-id piece-id :get expiry))
+                                          (w/message-field 3 [(w/varint-field 1 0)
+                                                              (w/varint-field 2 300)])
+                                          (w/varint-field 4 128)])]})]
+         (when (:error down)
+           (println (str "FAIL download: " (:message (:error down))))
+           (System/exit 1))
+         (let [chunks (mapv #(-> (w/decode %)
+                                 (pb/get-msg pb/piece-download-response :chunk)
+                                 (pb/get-bytes pb/download-response-chunk :data))
+                            (:messages down))
+               got    (vec (apply concat chunks))]
+           (println (str "download: " (count chunks) " messages, " (count got) " bytes"))
+           (when (< (count chunks) 2)
+             (println "FAIL a 300-byte piece in 128-byte chunks is more than one message")
+             (System/exit 1))
+           (if (= body got)
+             (do (println "ok   the piece came back byte for byte")
+                 (htls/close! {:socket (:socket c1)})
+                 (System/exit 0))
+             (do (println "FAIL the bytes that came back are not the bytes that went up")
+                 (System/exit 1))))))
+     :cljs
+     (do (println "uplink: JVM only for now") (js/process.exit 2))))
+
 (defn run [[mode dir arg expect rpc-name payload]]
   (case mode
     "serve" (serve dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     "dial"  (dial dir arg expect)
     "call"  (call dir arg expect rpc-name payload)
     "check-in" (check-in dir arg expect (or rpc-name "127.0.0.1:28967"))
+    "uplink" (uplink dir arg expect)
     "satellite" (satellite dir #?(:clj (parse-long (or arg "0")) :cljs 0) expect)
     "node"  (node dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)
     (do (println (str "usage: serve <dir> <port> | dial <dir> <host:port> [expect-hex]"

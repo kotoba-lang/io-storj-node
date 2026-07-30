@@ -159,6 +159,19 @@
   (when-let [v (get-varint msg schema k)]
     (get table v [:unknown v])))
 
+(defn enum-value
+  "The number an enum keyword travels as — the inverse of `get-enum`.
+
+  Here rather than beside a caller because the table is here: an inverse
+  built next to whoever needs one is a second reading of the same enum, and
+  the two only have to disagree once. Throws on a keyword the table does not
+  name, because the alternative is writing a field that decodes to something
+  else."
+  [table k]
+  (or (some (fn [[n kw]] (when (= kw k) n)) table)
+      (throw (ex-info "storj.node.pb: not a value of this enum"
+                      {:keyword k :table table}))))
+
 ;; ── zero-ness, as the Go encoder defines it ─────────────────────────────────
 
 (def go-zero-timestamp

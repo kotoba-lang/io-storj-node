@@ -31,8 +31,9 @@
   accepted, with the satellite dialling back and being served — on both
   runtimes. That required `drpc-mux-header` in both directions and is the
   reason this namespace has `:preamble` and `:expect-preamble` at all. What is
-  still untried is everything after introduction: no piece has been uploaded
-  to or downloaded from anything."
+  still untried against a real satellite is everything after introduction.
+  Pieces do move over these sockets between this library's own node and its
+  own uplink — see `storj.node.transfer` — but not to or from the network."
   (:require [storj.node.bytes :as b]
             [storj.node.host.keys :as hk]
             [storj.node.host.verify :as v]

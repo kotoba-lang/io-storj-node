@@ -268,6 +268,25 @@ jobs:
           STORJ_MUX=1 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
             check-in /tmp/id-cljc 127.0.0.1:19604 "$GO_ID" 127.0.0.1:28969 | tee /tmp/loop2.out
           grep -q 'ok   the satellite dialled this node back' /tmp/loop2.out
+      - name: A piece actually moves
+        run: |
+          set -euo pipefail
+          # the direction the library never had. piecestore has decided what
+          # an upload is allowed to be since long before anything could carry
+          # one, and serve-connection read :messages off the wire and dropped
+          # them — invisible, because a unary call also produces a message and
+          # its :calls entry arrives right behind. Only a stream that never
+          # closes shows it.
+          (STORJ_MUX=1 clojure -M:tls-peer node /tmp/id-cljc 19700 > /tmp/n.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/n.log 2>/dev/null; do sleep 1; done'
+          STORJ_MUX=1 clojure -M:tls-peer uplink /tmp/id-go 127.0.0.1:19700 "$CLJC_ID" \
+            | tee /tmp/uplink.out
+          grep -q 'upload accepted: 300 bytes' /tmp/uplink.out
+          grep -q 'ok   the piece came back byte for byte' /tmp/uplink.out
+          cat /tmp/n.log
+          # both transfers on one connection, on two streams
+          grep -q 'stream 1 /piecestore.Piecestore/Upload -> end' /tmp/n.log
+          grep -q 'stream 2 /piecestore.Piecestore/Download -> end' /tmp/n.log
       - name: And it refuses what the real satellite refused
         run: |
           set -euo pipefail
