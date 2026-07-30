@@ -452,6 +452,44 @@
      (do (println "satellite: JVM only — see the docstring")
          (js/process.exit 2))))
 
+(defn- sign-limit
+  "Sign an unsigned `OrderLimit` the way a satellite does.
+
+  `signing.SignOrderLimit` signs `EncodeOrderLimit` — the limit with its
+  signature field removed and the zero-valued optional fields dropped — with
+  the satellite's *leaf* key. Same rule as every other signature here: the id
+  comes from the CA, the signing from the leaf."
+  [identity fields]
+  (let [unsigned (w/decode (w/encode fields))
+        sig (hk/sign :ecdsa-sha256 (:private-key identity)
+                     (pb/encode-order-limit-for-signing unsigned))]
+    (w/encode (conj (vec fields) (w/bytes-field 10 (vec sig))))))
+
+(defn issue
+  "Print a signed `OrderLimit` as hex — what a satellite hands an uplink.
+
+  The harness node stubs its verifier, so it never needed one of these. A
+  node that checks signatures for real does, and without it every transfer it
+  is offered is refused for a reason that looks like a bug and is not.
+
+      issue <satellite-dir> <node-id-hex> <piece-id-hex> put|get [ttl-seconds]"
+  [dir node-id piece-id action ttl]
+  #?(:clj
+     (let [identity (load-identity dir)
+           expiry (+ (or (some-> ttl parse-long) 3600)
+                     (quot (System/currentTimeMillis) 1000))
+           fields [(w/bytes-field 1 (vec (repeat 16 0x01)))
+                   (w/bytes-field 2 (vec (repeat 32 0x02)))
+                   (w/bytes-field 4 (unhex node-id))
+                   (w/bytes-field 5 (unhex piece-id))
+                   (w/varint-field 6 1048576)
+                   (w/varint-field 7 (pb/enum-value pb/piece-action (keyword action)))
+                   (w/message-field 9 [(w/varint-field 1 expiry)])]]
+       (println (b/hex (sign-limit identity fields)))
+       (System/exit 0))
+     :cljs
+     (do (println "issue: JVM only") (js/process.exit 2))))
+
 (defn- uplink-limit
   "An `OrderLimit` addressed to `node-id`, for `action`.
 
@@ -510,7 +548,8 @@
        (let [up (rpc/stream-call
                  (:socket c1)
                  {:rpc tr/upload-rpc
-                  :messages [(w/encode [(w/bytes-field 1 (uplink-limit node-id piece-id :put expiry))])
+                  :messages [(w/encode [(w/bytes-field 1 (or (some-> (getenv "PUT_LIMIT") unhex)
+                                                             (uplink-limit node-id piece-id :put expiry)))])
                              (chunk 0 (subvec body 0 128))
                              (chunk 128 (subvec body 128 256))
                              (chunk 256 (subvec body 256))
@@ -542,7 +581,8 @@
                    (:socket c1)
                    {:rpc tr/download-rpc
                     :stream 2
-                    :messages [(w/encode [(w/bytes-field 1 (uplink-limit node-id piece-id :get expiry))
+                    :messages [(w/encode [(w/bytes-field 1 (or (some-> (getenv "GET_LIMIT") unhex)
+                                                               (uplink-limit node-id piece-id :get expiry)))
                                           (w/message-field 3 [(w/varint-field 1 0)
                                                               (w/varint-field 2 300)])
                                           (w/varint-field 4 128)])]})]
@@ -573,6 +613,7 @@
     "dial"  (dial dir arg expect)
     "call"  (call dir arg expect rpc-name payload)
     "check-in" (check-in dir arg expect (or rpc-name "127.0.0.1:28967"))
+    "issue" (issue dir arg expect rpc-name payload)
     "uplink" (uplink dir arg expect)
     "satellite" (satellite dir #?(:clj (parse-long (or arg "0")) :cljs 0) expect)
     "node"  (node dir #?(:clj (parse-long (or arg "0")) :cljs (js/parseInt (or arg "0") 10)) expect)

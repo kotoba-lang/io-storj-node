@@ -296,6 +296,24 @@ jobs:
           # and the other direction: the node signs its response with its leaf
           # key and the uplink checks it against the key the handshake gave it
           grep -q 'ok   the node signed its response, and it verifies' /tmp/uplink.out
+      - name: A signed order limit, and a node that checks it
+        run: |
+          set -euo pipefail
+          # The harness node stubs its verifier, so nothing here ever needed
+          # a signed limit. A node that checks for real does, and without one
+          # every transfer it is offered is refused for a reason that looks
+          # like a bug. `issue` signs the way a satellite does: the leaf key
+          # over EncodeOrderLimit.
+          PIECE=$(printf '5a%.0s' $(seq 32))
+          PUT=$(clojure -M:tls-peer issue /tmp/id-go "$CLJC_ID" "$PIECE" put 3600 | tail -1)
+          GET=$(clojure -M:tls-peer issue /tmp/id-go "$CLJC_ID" "$PIECE" get 3600 | tail -1)
+          test -n "$PUT" && test -n "$GET"
+          (STORJ_MUX=1 clojure -M:tls-peer node /tmp/id-cljc 28970 > /tmp/nv.log 2>&1) &
+          timeout 60 bash -c 'until grep -q "^listening" /tmp/nv.log 2>/dev/null; do sleep 1; done'
+          STORJ_MUX=1 PUT_LIMIT="$PUT" GET_LIMIT="$GET" \
+            clojure -M:tls-peer uplink /tmp/id-go 127.0.0.1:28970 "$CLJC_ID" \
+            | tee /tmp/signed.out
+          grep -q 'ok   the piece came back byte for byte' /tmp/signed.out
       - name: And it refuses what the real satellite refused
         run: |
           set -euo pipefail
