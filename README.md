@@ -146,7 +146,39 @@ were both implemented and missing.
   and never decodes anything, which is exactly why the node side fits in a
   library like this and the client side does not.
 
-No live request has ever been made against a satellite from this code.
+## What a real satellite has actually accepted
+
+A **check-in**, against `storj-up`'s satellite (1.158.2) on both runtimes,
+with the satellite dialling this node back and being served. Its log:
+
+```
+node_id: 18zC3pJ2mQYCnuKgmjsrymmWsdTTaJHhai4Nv84jhfN34U58g1
+node_addr: host.docker.internal:28967
+ping_node_success: true
+```
+
+That node id comes from this repo's minter, and `ping_node_success` cannot be
+true unless the satellite reached this process and got an answer to
+`/contact.Contact/PingNode` — so a single exchange covers dialling out,
+mutual TLS in both directions, DRPC framing both ways, and the reverse
+handshake. The satellite's own certificate verified to
+`12whfK1EDvHJtajBiAUeajQLYcWqxcQmdYQU5zX5cCf6bAxfgu4`, which is the value
+storj-up records as `Satellite0Identity`.
+
+Three things only a real peer found, all invisible to `testdata/tls_peer.go`
+because it speaks plain TLS and serves whatever rpc name it is handed:
+
+- **`drpc-mux-header`.** `"DRPC!!!1"` precedes the ClientHello in both
+  directions. Absent it, the peer closes with no TLS alert and no log line.
+- **`/contact.Node/CheckIn`**, not `/node.Node/CheckIn`. A test asserted the
+  wrong one and passed. `testdata/gen_rpc_paths.go` now prints every path from
+  `storj.io/common`'s DRPC descriptions and CI diffs them.
+- A hand-built server-side `TLSSocket` emits **`secure`**, not
+  `secureConnect`. The wrong event fails silently: the handshake completes and
+  nothing is ever served.
+
+**Beyond introduction, nothing has been tried.** No piece has been uploaded to
+or downloaded from anything, by this code or to it.
 
 ## Verification
 
