@@ -8,6 +8,8 @@
   even when nothing set it, and the first version of `node-version` left the
   field out."
   (:require [clojure.test :refer [deftest is testing]]
+            #?(:clj [clojure.string])
+            #?(:clj [storj.node.service :as svc])
             [proto.wire :as w]
             [storj.node.bytes :as b]
             [storj.node.contact :as contact]
@@ -114,10 +116,32 @@
     (is (not= 0 (:ping-node-success r)))))
 
 (deftest the-rpc-names-are-the-ones-storj-routes
-  (is (= "/node.Node/CheckIn" contact/rpc)
-      "the service is Node, not Contact")
+  ;; This asserted "/node.Node/CheckIn" and passed, because a test that
+  ;; compares a constant to a literal typed beside it only proves it was typed
+  ;; twice. A real satellite answered `protocol error: unknown rpc`. The
+  ;; authority is testdata/rpc-paths.txt, which testdata/gen_rpc_paths.go
+  ;; prints from storj.io/common's own generated code and CI regenerates —
+  ;; so these strings are checked against Storj rather than against me.
+  (is (= "/contact.Node/CheckIn" contact/rpc)
+      "both services live in contact.proto; the service is Node, the package is not")
   (is (= "/contact.Contact/PingNode" contact/ping-rpc)
       "and Contact is what the satellite calls back on the node"))
+
+#?(:clj
+   (deftest every-rpc-path-is-one-storj-declares
+     ;; The literals above are still literals. This is what makes them checked:
+     ;; testdata/rpc-paths.txt is printed from storj.io/common's own DRPC
+     ;; descriptions — the objects a Storj server routes on — and CI
+     ;; regenerates it. A path this library invents is not in that file.
+     (let [declared (set (remove clojure.string/blank?
+                                 (clojure.string/split-lines
+                                  (slurp "testdata/rpc-paths.txt"))))
+           ours     (into #{contact/rpc contact/ping-rpc}
+                          [svc/ping-rpc svc/exists-rpc svc/retain-rpc
+                           svc/delete-rpc svc/restore-rpc])]
+       (is (seq declared) "the fixture exists and is not empty")
+       (doseq [p (sort ours)]
+         (is (contains? declared p) (str p " is not a path storj.io/common declares"))))))
 
 (deftest the-request-round-trips-through-the-schema
   (let [msg (w/decode (contact/check-in-request request-opts))]

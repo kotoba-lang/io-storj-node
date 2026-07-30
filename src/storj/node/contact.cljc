@@ -32,9 +32,18 @@
             [storj.node.pb :as pb]))
 
 (def rpc
-  "`/node.Node/CheckIn`. The service is `Node`, not `Contact` — `Contact` is
-  the one the satellite calls *on the node* to ping it back."
-  "/node.Node/CheckIn")
+  "`/contact.Node/CheckIn`.
+
+  Two services live in `contact.proto`: `Node`, which a storage node calls on
+  a satellite, and `Contact`, which a satellite calls back on the node. Both
+  are in the `contact` package — the service is `Node` but the package is not.
+
+  This said `/node.Node/CheckIn` until a real satellite answered
+  `protocol error: unknown rpc`. Nothing had caught it: the message bytes were
+  verified against `storj.io/common`, but the path they travel under was only
+  ever seen by this project's own Go harness, which serves whatever name it is
+  given. A stub that accepts everything cannot report a name that is wrong."
+  "/contact.Node/CheckIn")
 
 (def ping-rpc
   "What a satellite calls on the node, in the other direction. Recorded so the

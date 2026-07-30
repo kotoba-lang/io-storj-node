@@ -126,12 +126,22 @@
          (.on server "listening"
               #(println (str "listening " (.-port (.address server)))))))))
 
+(defn- getenv
+  "One environment variable, on either runtime."
+  [k]
+  #?(:clj (System/getenv k) :cljs (aget (.-env js/process) k)))
+
 (defn dial [dir addr expect]
   (let [identity (load-identity dir)
         [host port] (str/split addr #":")
         opts {:host host :port #?(:clj (parse-long port) :cljs (js/parseInt port 10))
               :identity identity
-              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))}]
+              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))
+              ;; STORJ_MUX=1 when the peer is a real Storj node or satellite,
+              ;; which routes several protocols on one port and needs to be
+              ;; told which this is before the handshake. A plain TLS peer —
+              ;; testdata/tls_peer.go — must not be sent it.
+              :preamble (when (getenv "STORJ_MUX") htls/drpc-mux-header)}]
     #?(:clj
        (let [c (htls/connect opts)]
          (report (:peer c) expect)
@@ -180,7 +190,12 @@
         [host port] (str/split addr #":")
         opts {:host host :port #?(:clj (parse-long port) :cljs (js/parseInt port 10))
               :identity identity
-              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))}
+              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))
+              ;; STORJ_MUX=1 when the peer is a real Storj node or satellite,
+              ;; which routes several protocols on one port and needs to be
+              ;; told which this is before the handshake. A plain TLS peer —
+              ;; testdata/tls_peer.go — must not be sent it.
+              :preamble (when (getenv "STORJ_MUX") htls/drpc-mux-header)}
         call-opts {:rpc rpc-name :request (drpc/ascii-bytes payload)}]
     #?(:clj
        (let [c (htls/connect opts)]
@@ -219,7 +234,12 @@
         [host port] (str/split addr #":")
         opts {:host host :port #?(:clj (parse-long port) :cljs (js/parseInt port 10))
               :identity identity
-              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))}
+              :verify-opts (cond-> {} expect (assoc :expected-node-id (unhex expect)))
+              ;; STORJ_MUX=1 when the peer is a real Storj node or satellite,
+              ;; which routes several protocols on one port and needs to be
+              ;; told which this is before the handshake. A plain TLS peer —
+              ;; testdata/tls_peer.go — must not be sent it.
+              :preamble (when (getenv "STORJ_MUX") htls/drpc-mux-header)}
         request (contact/check-in-request
                  {:address  address
                   :version  {:version "1.104.5" :release? true}
@@ -262,6 +282,11 @@
                      r))]
       #?(:clj
          (let [l (htls/listen {:port port :identity identity :verify-opts {}
+                               ;; a satellite dials back through the same
+                               ;; connector it accepts on, so the ping arrives
+                               ;; with the mux header in front of its ClientHello
+                               :expect-preamble (when (getenv "STORJ_MUX")
+                                                  htls/drpc-mux-header)
                                :on-connection
                                (fn [{:keys [socket peer]}]
                                  (report peer expect)
@@ -276,6 +301,8 @@
          :cljs
          (let [{:keys [server]} (htls/listen
                                  {:port port :identity identity :verify-opts {}
+                                  :expect-preamble (when (getenv "STORJ_MUX")
+                                                     htls/drpc-mux-header)
                                   :on-connection
                                   (fn [{:keys [socket peer]}]
                                     (report peer expect)
