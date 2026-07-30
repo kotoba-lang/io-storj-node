@@ -61,6 +61,12 @@ jobs:
           # 3. and the recorded signatures are still valid per Storj's own
           #    code, and are still the ones the verifier tests assert
           (cd testdata && go run gen_sigs.go -verify)
+          # 3b. the DRPC paths are the ones storj.io/common's own descriptions
+          #     declare. Everything else here checks bytes; the names those
+          #     bytes travel under were checked only against a second copy of
+          #     the same guess, and "/node.Node/CheckIn" survived that for
+          #     weeks until a real satellite answered `unknown rpc`.
+          (cd testdata && go run gen_rpc_paths.go -verify)
           # 4. identity.cert is Go's PEM for the recorded certificates.
           #    Unlike the identity itself this is deterministic, so it is
           #    rebuilt and diffed rather than merely re-verified.

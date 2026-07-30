@@ -30,7 +30,8 @@
             [storj.node.host.verify :as v]
             [storj.node.identity :as ident]
             [storj.node.tls :as tls]
-            #?(:cljs ["node:tls" :as node-tls]))
+            #?(:cljs ["node:tls" :as node-tls])
+            #?(:cljs ["node:net" :as node-net]))
   #?(:clj (:import (java.io ByteArrayInputStream)
                    (java.net InetSocketAddress)
                    (java.security KeyStore)
@@ -130,6 +131,23 @@
 
 ;; ── connecting ──────────────────────────────────────────────────────────────
 
+(def drpc-mux-header
+  "The eight bytes a Storj peer expects before the TLS ClientHello.
+
+  Storj serves several protocols on one port and routes by a prefix, so
+  `rpc.TCPConnector` wraps the raw connection in `drpcmigrate.NewHeaderConn`
+  with `drpcmigrate.DRPCHeader` — which prepends this to the *first write*,
+  and the first write is the ClientHello. A dialler that starts the handshake
+  directly is talking to a listener that has not been told which protocol this
+  is, and the connection closes without a TLS alert: on the JVM that surfaces
+  as `SSLException: SSL peer shut down incorrectly` with nothing at all in the
+  satellite's log, which reads like a certificate problem and is not one.
+
+  Not sent by default. A plain TLS peer — including this project's own Go test
+  harness, which is why nothing here needed it until a real satellite was on
+  the other end — would see these bytes as a malformed record."
+  [0x44 0x52 0x50 0x43 0x21 0x21 0x21 0x31]) ; "DRPC!!!1"
+
 (defn connect
   "Dial `host:port` as a Storj peer and verify who answered.
 
@@ -143,17 +161,35 @@
   the handshake is forced before returning, so a refused peer surfaces here
   rather than on the first write.
 
+  `:preamble` is bytes to put on the wire *before* the handshake — pass
+  `drpc-mux-header` when the peer is a real Storj node or satellite. It cannot
+  be sent through the TLS socket, so this layers TLS over a plain socket that
+  has already been written to.
+
   On cljs this returns a promise, because a Node socket has no synchronous
   handshake."
-  [{:keys [host port identity verify-opts timeout-ms] :or {timeout-ms 20000}}]
+  [{:keys [host port identity verify-opts timeout-ms preamble] :or {timeout-ms 20000}}]
   #?(:clj
      (let [seen (atom nil)
            ctx  (ssl-context identity (assoc verify-opts :verifier
                                              (or (:verifier verify-opts) v/verifier))
                              #(reset! seen %))
-           ^SSLSocket sock (.createSocket (.getSocketFactory ctx))]
+           ^SSLSocket sock
+           (if (seq preamble)
+             ;; the preamble has to precede the ClientHello, so the plain
+             ;; socket is connected and written first and TLS is layered over
+             ;; it — `createSocket` on an existing socket is the only form that
+             ;; allows anything to have been sent already
+             (let [raw (java.net.Socket.)]
+               (.connect raw (InetSocketAddress. ^String host (int port)) (int timeout-ms))
+               (.setSoTimeout raw (int timeout-ms))
+               (doto (.getOutputStream raw)
+                 (.write (byte-array (map unchecked-byte preamble)))
+                 (.flush))
+               (.createSocket (.getSocketFactory ctx) raw ^String host (int port) true))
+             (doto ^SSLSocket (.createSocket (.getSocketFactory ctx))
+               (.connect (InetSocketAddress. ^String host (int port)) (int timeout-ms))))]
        (.setEnabledProtocols sock (into-array String [protocol]))
-       (.connect sock (InetSocketAddress. ^String host (int port)) (int timeout-ms))
        (.setSoTimeout sock (int timeout-ms))
        ;; force the handshake now: without this a refused peer is discovered by
        ;; whichever later read or write happens to trigger it
@@ -164,9 +200,16 @@
      (js/Promise.
       (fn [resolve reject]
         (let [{:keys [cert key]} (pem-of identity)
-              opts (clj->js {:host host :port port :cert cert :key key
-                             :rejectUnauthorized false
-                             :minVersion protocol})
+              base {:cert cert :key key :rejectUnauthorized false
+                    :minVersion protocol}
+              opts (clj->js (if (seq preamble)
+                              ;; `tls.connect` takes an existing socket, which
+                              ;; is how the preamble gets out before the
+                              ;; handshake starts on top of it
+                              (assoc base :socket
+                                     (doto (.connect node-net #js {:host host :port port})
+                                       (.write (js/Buffer.from (clj->js (vec preamble))))))
+                              (assoc base :host host :port port)))
               sock (.connect node-tls opts)]
           (.setTimeout sock timeout-ms)
           (.on sock "error" reject)
@@ -189,20 +232,55 @@
   `{:socket ... :peer {...}}` once a peer has been verified.
 
   A peer that fails verification is disconnected and `on-connection` is not
-  called; `on-refused`, if given, is called with the result instead."
-  [{:keys [port identity verify-opts on-connection on-refused]}]
+  called; `on-refused`, if given, is called with the result instead.
+
+  `:expect-preamble` is bytes to read and discard before the handshake — pass
+  `drpc-mux-header` when the peer is a real Storj satellite. A satellite dials
+  a node back through the same `rpc.TCPConnector` it accepts connections on,
+  so the ping arrives with the mux header in front of its ClientHello; a
+  listener that hands those eight bytes to TLS sees a malformed record and the
+  ping fails, which the satellite reports as the node being unreachable."
+  [{:keys [port identity verify-opts on-connection on-refused expect-preamble]}]
   #?(:clj
      (let [ctx (ssl-context identity (assoc verify-opts :verifier
                                             (or (:verifier verify-opts) v/verifier))
                             nil)
-           server (.createServerSocket (.getServerSocketFactory ctx) (int port))]
-       (.setNeedClientAuth ^javax.net.ssl.SSLServerSocket server true)
-       (.setEnabledProtocols ^javax.net.ssl.SSLServerSocket server
-                             (into-array String [protocol]))
+           ;; with a preamble the raw bytes have to be read before TLS starts,
+           ;; so the listening socket is plain and each accepted connection is
+           ;; wrapped individually
+           server (if (seq expect-preamble)
+                    (java.net.ServerSocket. (int port))
+                    (doto ^javax.net.ssl.SSLServerSocket
+                          (.createServerSocket (.getServerSocketFactory ctx) (int port))
+                      (.setNeedClientAuth true)
+                      (.setEnabledProtocols (into-array String [protocol]))))]
        {:server server
-        :port (.getLocalPort server)
+        :port (.getLocalPort ^java.net.ServerSocket server)
         :accept (fn []
-                  (let [^SSLSocket s (.accept server)]
+                  (let [^SSLSocket s
+                        (if (seq expect-preamble)
+                          (let [raw (.accept ^java.net.ServerSocket server)
+                                in  (.getInputStream raw)
+                                buf (byte-array (count expect-preamble))]
+                            (loop [off 0]
+                              (when (< off (alength buf))
+                                (let [n (.read in buf off (- (alength buf) off))]
+                                  (when (neg? n)
+                                    (fail "peer closed before sending the preamble" {}))
+                                  (recur (+ off n)))))
+                            (when-not (= (vec expect-preamble) (b/->ints buf))
+                              (fail "peer sent a different preamble"
+                                    {:expected (vec expect-preamble) :got (b/->ints buf)}))
+                            ;; the (Socket, String, int, boolean) overload —
+                            ;; there is no (Socket, InetAddress, int, boolean)
+                            (doto ^SSLSocket (.createSocket (.getSocketFactory ctx) raw
+                                                            ^String (.getHostAddress
+                                                                     (.getInetAddress raw))
+                                                            (int (.getPort raw)) true)
+                              (.setUseClientMode false)
+                              (.setNeedClientAuth true)
+                              (.setEnabledProtocols (into-array String [protocol]))))
+                          (.accept ^javax.net.ssl.SSLServerSocket server))]
                     (try
                       (.startHandshake s)
                       ;; the trust manager already ran; re-reading the chain
@@ -219,20 +297,60 @@
 
      :cljs
      (let [{:keys [cert key]} (pem-of identity)
-           server (.createServer node-tls
-                                 (clj->js {:cert cert :key key
-                                           :requestCert true
-                                           :rejectUnauthorized false
-                                           :minVersion protocol})
-                                 (fn [sock]
-                                   (let [result (tls/verify-peer
-                                                 (peer-chain sock)
-                                                 (assoc verify-opts :verifier
-                                                        (or (:verifier verify-opts) v/verifier)))]
-                                     (if (:ok? result)
-                                       (on-connection {:socket sock :peer result})
-                                       (do (.destroy sock)
-                                           (when on-refused (on-refused result)))))))]
+           tls-opts (clj->js {:cert cert :key key
+                              :requestCert true
+                              :rejectUnauthorized false
+                              :minVersion protocol})
+           secured  (fn [sock]
+                      (let [result (tls/verify-peer
+                                    (peer-chain sock)
+                                    (assoc verify-opts :verifier
+                                           (or (:verifier verify-opts) v/verifier)))]
+                        (if (:ok? result)
+                          (on-connection {:socket sock :peer result})
+                          (do (.destroy sock)
+                              (when on-refused (on-refused result))))))
+           server   (if (seq expect-preamble)
+                      ;; a plain server, so the preamble can be read off the
+                      ;; raw socket before TLS is layered over it
+                      (.createServer
+                       node-net
+                       (fn [raw]
+                         (let [want (vec expect-preamble)
+                               n    (count want)
+                               ;; `read(n)` rather than a `data` listener: a
+                               ;; `data` listener puts the socket in flowing
+                               ;; mode, and every byte of the ClientHello that
+                               ;; arrives before TLS is layered on is delivered
+                               ;; to a handler that is not looking for it and
+                               ;; lost. Paused, the leftover simply stays in the
+                               ;; socket's buffer and TLSSocket reads it.
+                               try-read
+                               (fn try-read []
+                                 (when-let [head (.read raw n)]
+                                   (.removeListener raw "readable" try-read)
+                                   (let [got (b/->ints head)]
+                                     (if-not (= want got)
+                                       (do (.destroy raw)
+                                           (when on-refused
+                                             (on-refused {:ok? false
+                                                          :reasons [{:reason :preamble-mismatch
+                                                                     :expected want :got got}]})))
+                                       (let [sock (new (.-TLSSocket node-tls) raw
+                                                       (js/Object.assign
+                                                        #js {} tls-opts #js {:isServer true}))]
+                                         ;; `secure`, not `secureConnect`: a
+                                         ;; TLSSocket built by hand in server
+                                         ;; mode emits that one. Getting it
+                                         ;; wrong is silent — the handshake
+                                         ;; completes, the client is satisfied,
+                                         ;; and nothing is ever served.
+                                         (.on sock "secure" #(secured sock))
+                                         (.on sock "error"
+                                              (fn [e] (when on-refused (on-refused e)))))))))]
+                           (.on raw "readable" try-read)
+                           (.on raw "error" (fn [e] (when on-refused (on-refused e)))))))
+                      (.createServer node-tls tls-opts secured))]
        (.listen server port)
        {:server server})))
 
