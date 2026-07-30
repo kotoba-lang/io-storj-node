@@ -29,6 +29,7 @@
             [storj.node.pb-test]
             [storj.node.pem-test]
             [storj.node.piece-test]
+            [storj.node.piecestore-test]
             [storj.node.retain-test]
             [storj.node.service-test]
             [storj.node.tls-test]))
@@ -51,6 +52,7 @@
              'storj.node.pb-test
              'storj.node.pem-test
              'storj.node.piece-test
+             'storj.node.piecestore-test
              'storj.node.retain-test
              'storj.node.service-test
              'storj.node.tls-test)

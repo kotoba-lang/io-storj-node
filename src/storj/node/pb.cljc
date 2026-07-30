@@ -298,3 +298,40 @@
 (def retain-request
   "piecestore2.proto `RetainRequest`."
   {1 :creation-date 2 :filter 3 :hash-algorithm 4 :hash})
+
+;; ── the streaming piecestore surface ────────────────────────────────────────
+
+(def piece-upload-request
+  "piecestore2.proto `PieceUploadRequest`.
+
+  One message type for four different messages. The first carries `limit`, the
+  middle ones carry `order` and `chunk`, the last carries `done` — and nothing
+  in the encoding says which is which. A node that reads a `limit` out of the
+  fifth message it receives is being told to forget the one it admitted."
+  {1 :limit
+   2 :order
+   3 :chunk
+   4 :done
+   5 :hash-algorithm})
+
+(def piece-upload-response
+  {1 :done 2 :node-certchain})
+
+(def upload-chunk
+  "`PieceUploadRequest.Chunk` — where the bytes go and what they are."
+  {1 :offset 2 :data})
+
+(def piece-download-request
+  "piecestore2.proto `PieceDownloadRequest`."
+  {1 :limit 2 :order 3 :chunk 4 :maximum-chunk-size})
+
+(def download-chunk
+  "`PieceDownloadRequest.Chunk` — how much of the piece is wanted."
+  {1 :offset 2 :chunk-size})
+
+(def piece-download-response
+  {1 :chunk 2 :hash 3 :limit 4 :restored-from-trash})
+
+(def download-response-chunk
+  "`PieceDownloadResponse.Chunk` — the bytes going back."
+  {1 :offset 2 :data})
