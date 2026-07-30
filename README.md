@@ -103,16 +103,27 @@ were both implemented and missing.
 messages and comes back in three, byte for byte, over real TLS and real DRPC
 — both transfers on one connection, on two streams. What is still missing:
 
-- **The uplink's signature on `done` is not checked.** `finish-upload` reports
-  `:hash-verified? false` rather than implying otherwise. The piece public key
-  is in the order limit and the verifier is the same one everything else uses;
-  joining them is the next thing.
+- **The uplink's signature on `done` is checked**, and `:hash-verified?`
+  reports whether it was rather than leaving the caller to guess. The key is
+  `uplink_public_key` in the limit — 32 raw ed25519 bytes, the one row in
+  `host.verify`'s table that is not a DER SPKI — and the signed bytes are a
+  `PieceHashSigning`, which drops the signature and drops the timestamp *when
+  it is zero*, the opposite of an `OrderLimit`. Unknown fields are refused
+  outright; an order limit keeps them. Held to a signature `gen_piecestore.go`
+  produced with Storj's own code, so passing means an ed25519 signature made
+  by Go verified against bytes rebuilt here.
+
+  The wire path does not exercise it: the harness uplink sends no key and an
+  unsigned `done`, so the node reports `hash-verified? false` and CI asserts
+  that it says so. Signing one would mean this library's uplink signing its
+  own upload for this library's node to check — weaker evidence than Go's
+  signature, not stronger.
 - **The node's own `PieceHash` is unsigned.** An uplink reads it to learn the
   node accepted what it sent. Signing needs this node's key through
   `IKeyMaterial`. Sending an unsigned one is honest; fabricating one is not.
 - **What lands in the store is a body, not a piece file.** Storage format V0.
-  A real node writes V1 — a 512-byte header carrying the uplink's signed hash
-  — and the hash it would carry is the one above that has not been checked.
+  A real node writes V1 — a 512-byte header carrying the uplink's signed hash,
+  which the node can now check but does not yet persist.
 - **A piece is buffered whole.** `IBlobStore/-put` takes a whole blob, so the
   streaming is real up to the store and stops there. That is a limit of that
   protocol, not of the transport.

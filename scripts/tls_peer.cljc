@@ -317,6 +317,16 @@
                                 (cond (:error o) (str "error " (:message (:error o)))
                                       (:end o)   "end"
                                       :else      (str (count (:message o)) " bytes")))))
+                ;; whether the uplink's signature on `done` was checked. This
+                ;; harness sends a limit with no `uplink_public_key` and an
+                ;; unsigned `done`, so the answer is no — printed rather than
+                ;; left implicit, because a node that stored a piece it could
+                ;; not verify and a node that verified one must not look the
+                ;; same in a log. The signature path itself is held to a real
+                ;; Go-generated one in piecestore_test.
+                (when-let [s (:stored r)]
+                  (println (str "stored " (:size s) " bytes, hash-verified? "
+                                (:hash-verified? s))))
                 r)))]
       #?(:clj
          (let [l (htls/listen {:port port :identity identity :verify-opts {}

@@ -9,6 +9,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [proto.wire :as w]
             [storj.node.host.verify :as v]
+            [storj.node.pb :as pb]
             [storj.node.piecestore :as ps]
             [storj.node.protocols :as p]))
 
@@ -118,16 +119,104 @@
       (is (= (count data) (:size fin)))
       (is (= 2 (:chunks fin))))))
 
-(deftest the-hash-is-not-claimed-to-be-verified
-  ;; the uplink signs `done` with its piece key, and checking that needs the
-  ;; key out of the limit. Saying so is the difference between a node that has
-  ;; not checked and a node that appears to have.
-  (let [st  (ps/begin-upload (decode upload-first) opts)
-        r1  (ps/accept-chunk st (decode upload-chunk-1))
-        r2  (ps/accept-chunk (:state r1) (decode upload-chunk-2))
-        fin (ps/finish-upload (:state r2) (decode upload-done))]
-    (is (false? (:hash-verified? fin)))
-    (is (some? (:signature fin)) "the signature is carried, just not checked")))
+(defn- upload-through
+  "Run the fixture upload to `done`, with `over` merged into the options."
+  ([done-msg] (upload-through done-msg {}))
+  ([done-msg over]
+   (let [o   (merge opts over)
+         st  (ps/begin-upload (decode upload-first) o)
+         r1  (ps/accept-chunk st (decode upload-chunk-1))
+         r2  (ps/accept-chunk (:state r1) (decode upload-chunk-2))]
+     (ps/finish-upload (:state r2) done-msg))))
+
+(deftest the-uplinks-signature-on-done-is-checked
+  ;; `gen_piecestore.go` signed this `done` with a real piece key and put the
+  ;; matching public key in the limit, so what passes here is an ed25519
+  ;; signature Storj's own code produced — over bytes this library rebuilt
+  ;; with `encode-piece-hash-for-signing`. Getting either the encoding or the
+  ;; key wrong fails; there is no way for this to pass by accident.
+  (let [fin (upload-through (decode upload-done))]
+    (is (:ok? fin) (pr-str (:reasons fin)))
+    (is (true? (:hash-verified? fin)))
+    (is (some? (:signature fin)))))
+
+(defn- flip-byte
+  "Rebuild `done` with one byte of field `n` flipped.
+
+  Rebuilt rather than edited: a decoded field carries `:raw` and `w/encode`
+  emits that verbatim — which is what makes decode/encode byte-exact, and
+  which means editing `:value` changes nothing at all. A tamper test that
+  edits `:value` passes while tampering with nothing, so this drops `:raw`."
+  [done n]
+  (mapv (fn [f]
+          (if (= n (:field-number f))
+            (w/bytes-field n (assoc (vec (:value f)) 0
+                                    (bit-xor 0xff (first (:value f)))))
+            f))
+        done))
+
+(defn- done-message [fields]
+  (w/decode (w/encode [(w/message-field 4 fields)])))
+
+(deftest a-signature-that-is-wrong-is-refused
+  (let [done (pb/get-msg (decode upload-done) pb/piece-upload-request :done)
+        fin  (upload-through (done-message (flip-byte done 3)))]
+    (is (not (:ok? fin)))
+    (is (= [:uplink-signature-invalid] (mapv :reason (:reasons fin))))))
+
+(deftest a-hash-that-was-not-the-one-signed-is-refused
+  ;; the signature is untouched; the bytes it covers are not. This is the
+  ;; attack the check exists for — an uplink is told its piece hashed to
+  ;; something it did not.
+  (let [done (pb/get-msg (decode upload-done) pb/piece-upload-request :done)
+        fin  (upload-through (done-message (flip-byte done 2)))]
+    (is (not (:ok? fin)))
+    (is (= [:uplink-signature-invalid] (mapv :reason (:reasons fin))))))
+
+(deftest an-unknown-field-in-the-piece-hash-is-refused
+  ;; `verifyUplinkPieceHashSignature` refuses these outright rather than
+  ;; signing over them — the opposite of an order limit, which keeps them.
+  (let [done (pb/get-msg (decode upload-done) pb/piece-upload-request :done)
+        fin  (upload-through (done-message (conj (vec done) (w/varint-field 99 1))))]
+    (is (not (:ok? fin)))
+    (is (= [:unknown-fields-in-piece-hash] (mapv :reason (:reasons fin))))
+    (is (= [99] (:fields (first (:reasons fin)))))))
+
+(deftest a-done-with-no-signature-is-not-a-verified-one
+  ;; The reachable "nothing to check with" case. Not the missing-verifier one:
+  ;; `orders/admit` refuses a limit without a verifier, so an upload with no
+  ;; verifier never reaches `finish-upload` at all — the guard for it in
+  ;; `verify-piece-hash` is unreachable through this path and is there because
+  ;; the function is also callable directly.
+  (let [done (pb/get-msg (decode upload-done) pb/piece-upload-request :done)
+        bare (remove #(= 3 (:field-number %)) done)
+        fin  (upload-through (done-message (vec bare)))]
+    (is (:ok? fin) (pr-str (:reasons fin)))
+    (is (false? (:hash-verified? fin))
+        "a node with nothing to check with must not claim it checked")
+    (is (nil? (:signature fin)))))
+
+(deftest a-limit-whose-key-is-not-ed25519-is-refused
+  ;; Reached by building the state directly, because `orders/admit` stops a
+  ;; limit like this first — its satellite signature no longer matches once
+  ;; the key is edited. That ordering is right, and it means this guard only
+  ;; matters for a limit a satellite really did sign with a malformed key.
+  ;; Refused rather than handed to the verifier: an ed25519 verify with a
+  ;; short key errors at a layer that reports it as `invalid signature`,
+  ;; which reads as the uplink's fault.
+  (let [done  (pb/get-msg (decode upload-done) pb/piece-upload-request :done)
+        limit (mapv (fn [f]
+                      (if (= 13 (:field-number f)) (w/bytes-field 13 [1 2 3]) f))
+                    (pb/get-msg (decode upload-first) pb/piece-upload-request :limit))
+        state {:limit (w/decode (w/encode limit))
+               :verifier v/verifier
+               :piece-id (pb/get-bytes done pb/piece-hash :piece-id)
+               :received (pb/get-varint done pb/piece-hash :piece-size)
+               :chunks 2 :hash-algorithm :sha256 :finished? false}
+        fin   (ps/finish-upload state (done-message done))]
+    (is (not (:ok? fin)))
+    (is (= [:uplink-public-key-is-not-ed25519] (mapv :reason (:reasons fin))))
+    (is (= 3 (:length (first (:reasons fin)))))))
 
 ;; ── uploads that must not be ────────────────────────────────────────────────
 
