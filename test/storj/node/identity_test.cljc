@@ -90,6 +90,25 @@
     (is (not= (ident/node-id (ident/certificate ca-der))
               (ident/node-id (ident/certificate leaf-der)))))
 
+  (testing "and nothing at all is refused rather than hashed"
+    ;; SHA-256 of the empty input is a perfectly good digest, so without a
+    ;; check this returns an id of the right length with a valid version byte
+    ;; and a difficulty of 10 — the same one, for every caller. Reading Storj's
+    ;; own shipped test identities produced exactly that: three distinct CAs,
+    ;; one convincing id, because the DER had been passed unparsed and
+    ;; `:spki-der` was nil.
+    (doseq [empty-key [nil []]]
+      (is (thrown-with-msg?
+           #?(:clj Exception :cljs js/Error)
+           #"no public key to derive a node id from"
+           (ident/node-id-from-public-key empty-key 0))))
+    (testing "including via node-id, where the mistake actually happens"
+      (is (thrown-with-msg?
+           #?(:clj Exception :cljs js/Error)
+           #"no public key to derive a node id from"
+           ;; unparsed DER rather than a certificate map
+           (ident/node-id ca-der)))))
+
   (testing "difficulty"
     (is (= expected-difficulty
            (node-id/difficulty (ident/node-id (ident/certificate ca-der)))))))
