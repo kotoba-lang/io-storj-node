@@ -141,8 +141,20 @@
 
   Split out from `node-id` because minting runs this in a loop over keys that
   have no certificate yet — `identity.GenerateKey` derives the id from the key
-  and builds the certificate around whichever one wins."
+  and builds the certificate around whichever one wins.
+
+  Refuses an empty key. Hashing nothing succeeds — SHA-256 of the empty input
+  is a perfectly good digest — so without this, a missing key produces an id of
+  the right length, carrying a valid version byte, reporting a difficulty of
+  10, and identical for every caller who arrives here the same way. That is not
+  a hypothetical: reading Storj's own shipped test identities, the CA was
+  passed as unparsed DER, `:spki-der` was nil, and three distinct identities
+  all came back as one convincing node id. An id is the wrong place to be
+  plausible when you are wrong."
   [spki-der version]
+  (when (empty? spki-der)
+    (throw (ex-info "storj.node.identity: no public key to derive a node id from"
+                    {:spki-der spki-der})))
   (let [digest (b/sha256d spki-der)]
     (conj (subvec digest 0 (dec id/id-length)) version)))
 
