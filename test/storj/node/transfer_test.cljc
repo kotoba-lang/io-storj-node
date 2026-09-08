@@ -5,7 +5,7 @@
   `OrderLimit` — so admission is exercised rather than stubbed out. Only the
   signature check is a stub, because producing a satellite's signature would
   mean holding a satellite's key."
-  (:require [clojure.string]
+  (:require [kotoba.lang.text]
             [clojure.test :refer [deftest is testing]]
             [proto.wire :as w]
             [storj.node.bytes :as b]
@@ -93,7 +93,7 @@
   last byte of `3801` becomes 02. A download presented with the PUT limit is
   refused for `:action-mismatch`, which is admission working — the test needs
   a limit that authorises what it is asking for."
-  (clojure.string/replace order-limit-hex "308080403801" "308080403802"))
+  (kotoba.lang.text/replace order-limit-hex "308080403801" "308080403802"))
 
 (defn- download-msg [offset size & [max-chunk]]
   (w/encode (cond-> [(w/bytes-field 1 (unhex get-limit-hex))

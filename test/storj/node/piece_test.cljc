@@ -1,5 +1,5 @@
 (ns storj.node.piece-test
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
             [proto.wire :as w]
             [storj.node.pb :as pb]
@@ -35,12 +35,12 @@
       ;; abcdefghijklmnopqrstuvwxyz234567, PieceID.String() the standard
       ;; uppercase table. Deriving one from Go's output of the other is what
       ;; makes this a check rather than a restatement.
-      (let [lower  (str/lower-case piece-id-b32-from-go)
+      (let [lower  (str/lower piece-id-b32-from-go)
             [_ prefix rest] (str/split path #"/")]
         (is (= lower (str prefix (str/replace rest #"\.sj1$" ""))))))
 
     (testing "and it is not uppercase"
-      (is (= path (str/lower-case path))
+      (is (= path (str/lower path))
           "an uppercase path would put every piece where the node never looks"))))
 
 (deftest format-versions

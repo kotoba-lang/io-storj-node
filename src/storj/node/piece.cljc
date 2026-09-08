@@ -19,7 +19,7 @@
   and `storagenode/blobstore/filestore/dir.go` is where the lowercase table
   comes from. Getting them the wrong way round puts every piece in a
   directory the node will never look in again."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [storj.node.bytes :as b]
             [storj.node.pb :as pb]
             [proto.wire :as w]))
@@ -47,7 +47,7 @@
 (defn id->string
   "A piece or satellite ID as Storj prints it: uppercase base32, no padding."
   [id]
-  (str/upper-case (b/base32-encode id)))
+  (str/upper (b/base32-encode id)))
 
 (defn- path-encode
   "Lowercase base32, no padding — `filestore.PathEncoding`."

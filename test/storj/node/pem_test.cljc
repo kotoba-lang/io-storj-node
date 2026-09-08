@@ -6,7 +6,7 @@
   wrote for the same certificates. Everything else here is about what happens
   to a file that is not quite right, because that file is a real operator's
   identity and losing part of it silently is worse than refusing it."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is testing]]
             [storj.node.fixture :refer [ca-der chain chain-pem leaf-der]]
             [storj.node.identity :as ident]
