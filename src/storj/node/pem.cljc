@@ -21,7 +21,7 @@
   base58 and base32 because those are what multihash and CID need. Sixty lines
   of table lookup is cheaper than a dependency, and it is checked against
   RFC 4648's vectors and against a PEM file Go wrote."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (def line-length
   "Characters of base64 per line — what `encoding/pem` emits, and what makes

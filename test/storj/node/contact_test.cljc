@@ -8,7 +8,7 @@
   even when nothing set it, and the first version of `node-version` left the
   field out."
   (:require [clojure.test :refer [deftest is testing]]
-            #?(:clj [clojure.string])
+            #?(:clj [kotoba.lang.text])
             #?(:clj [storj.node.service :as svc])
             [proto.wire :as w]
             [storj.node.bytes :as b]
@@ -133,8 +133,8 @@
      ;; testdata/rpc-paths.txt is printed from storj.io/common's own DRPC
      ;; descriptions — the objects a Storj server routes on — and CI
      ;; regenerates it. A path this library invents is not in that file.
-     (let [declared (set (remove clojure.string/blank?
-                                 (clojure.string/split-lines
+     (let [declared (set (remove kotoba.lang.text/blank?
+                                 (kotoba.lang.text/split-lines
                                   (slurp "testdata/rpc-paths.txt"))))
            ours     (into #{contact/rpc contact/ping-rpc}
                           [svc/ping-rpc svc/exists-rpc svc/retain-rpc

@@ -13,7 +13,7 @@
   In one namespace rather than copied into each test file: hand-rewrapping
   these constants has already produced a misaligned certificate and twelve
   test errors once, and a second copy is a second chance at it."
-  (:require [clojure.string]))
+  (:require [kotoba.lang.text]))
 
 (defn unhex [s]
   (mapv #?(:clj  #(Integer/parseInt % 16)

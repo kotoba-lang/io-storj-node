@@ -15,7 +15,7 @@
 
   This is a test harness, not part of the library: nothing under `src/`
   requires it, and `scripts/` is not on `:paths`."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [drpc.client :as drpc]
             [storj.node.contact :as contact]
             [storj.node.host.blobs :as blobs]
