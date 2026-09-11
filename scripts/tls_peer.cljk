@@ -2,11 +2,11 @@
   "A Storj TLS peer built out of this library, mirroring `testdata/tls_peer.go`
   so the two can be pointed at each other.
 
-      clojure -M:tls-peer serve /tmp/id-a 19443
-      clojure -M:tls-peer dial  /tmp/id-b 127.0.0.1:19443 <expected-hex>
-      clojure -M:tls-peer call  /tmp/id-b 127.0.0.1:19443 <expected-hex> \\
+      kbb -M:tls-peer serve /tmp/id-a 19443
+      kbb -M:tls-peer dial  /tmp/id-b 127.0.0.1:19443 <expected-hex>
+      kbb -M:tls-peer call  /tmp/id-b 127.0.0.1:19443 <expected-hex> \\
         /echo.Echo/Echo hello
-      nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/tls_peer.cljk \\
+      kbb --backend sci --classpath \"$(kbb -A:cljs -Spath)\" scripts/tls_peer.cljk \\
         dial /tmp/id-b 127.0.0.1:19443 <expected-hex>
 
   In serve mode it prints `listening <port>` once bound, then accepts one

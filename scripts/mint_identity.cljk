@@ -8,8 +8,8 @@
   directory that `identity.FullIdentityFromPEM` then has to accept from
   either.
 
-      clojure -M:mint /tmp/identity-jvm 16
-      nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/mint_identity.cljk \\
+      kbb -M:mint /tmp/identity-jvm 16
+      kbb --backend sci --classpath \"$(kbb -A:cljs -Spath)\" scripts/mint_identity.cljk \\
         /tmp/identity-cljs 16
       cd testdata && go run verify_minted.go -dir /tmp/identity-jvm
 
