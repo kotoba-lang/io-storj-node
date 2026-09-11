@@ -362,16 +362,16 @@ refusal it claims to.
 ## Test
 
 ```sh
-clojure -M:test                                              # JVM
-nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljk
-clojure -M:lint
+kbb -M:test                                              # JVM
+kbb --backend sci --classpath "$(kbb -A:cljs -Spath)" scripts/verify-cljs.cljk
+kbb -M:lint
 cd testdata && go run gen_vectors.go                         # regenerate vectors
 cd testdata && go run gen_sigs.go -verify                    # recheck signatures
-clojure -M:mint /tmp/identity 16                              # mint an identity
-clojure -M:tls-peer serve /tmp/identity 19443                # and speak TLS with it
-clojure -M:tls-peer call /tmp/identity 127.0.0.1:19443 \
+kbb -M:mint /tmp/identity 16                              # mint an identity
+kbb -M:tls-peer serve /tmp/identity 19443                # and speak TLS with it
+kbb -M:tls-peer call /tmp/identity 127.0.0.1:19443 \
   <node-id-hex> /echo.Echo/Echo hello                        # TLS + DRPC in one
-clojure -M:tls-peer check-in /tmp/identity 127.0.0.1:19443 \
+kbb -M:tls-peer check-in /tmp/identity 127.0.0.1:19443 \
   <node-id-hex> 127.0.0.1:28967                              # and a real check-in
 cd testdata && go run verify_minted.go -dir /tmp/identity    # and let Storj load it
 cd testdata && go run gen_identity.go -pem                   # rebuild identity.cert
