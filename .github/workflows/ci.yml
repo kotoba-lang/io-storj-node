@@ -36,7 +36,7 @@ jobs:
           cli: latest
       - run: npm install
       - run: npm install -g nbb
-      - run: nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
+      - run: nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljk
 
   vectors:
     # The reference vectors in the tests are Storj's own output. This job
@@ -87,13 +87,13 @@ jobs:
           (cd testdata && go run gen_identity.go -pem)
           git diff --exit-code testdata/identity.cert
           for h in $(grep -o '"[0-9a-f]\{16,\}"' testdata/sigs.edn | tr -d '"'); do
-            if ! tr -d ' "\n' < test/storj/node/host/verify_test.cljc | grep -q "$h"; then
+            if ! tr -d ' "\n' < test/storj/node/host/verify_test.cljk | grep -q "$h"; then
               echo "recorded signature not asserted in verify_test.cljc: $h"
               exit 1
             fi
           done
           for h in $(grep -o '"[0-9a-f]\{16,\}"' /tmp/vectors.edn | tr -d '"'); do
-            if ! tr -d ' "\n' < test/storj/node/pb_test.cljc | grep -q "$h"; then
+            if ! tr -d ' "\n' < test/storj/node/pb_test.cljk | grep -q "$h"; then
               echo "vector not asserted anywhere in pb_test.cljc: $h"
               exit 1
             fi
@@ -132,7 +132,7 @@ jobs:
       - name: Mint on nbb and let Storj load it
         run: |
           set -euo pipefail
-          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/mint_identity.cljc \
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/mint_identity.cljk \
             /tmp/identity-cljs 16
           (cd testdata && go run verify_minted.go -dir /tmp/identity-cljs)
 
@@ -185,7 +185,7 @@ jobs:
           set -euo pipefail
           (cd testdata && go run tls_peer.go -serve -identity /tmp/id-go -port 19444 -expect "$CLJC_ID" > /tmp/go-serve2.log 2>&1) &
           timeout 60 bash -c 'until grep -q listening /tmp/go-serve2.log 2>/dev/null; do sleep 1; done'
-          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljk \
             dial /tmp/id-cljc 127.0.0.1:19444 "$GO_ID"
           wait
           cat /tmp/go-serve2.log
@@ -202,7 +202,7 @@ jobs:
       - name: Go client against an nbb server
         run: |
           set -euo pipefail
-          (nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+          (nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljk \
             serve /tmp/id-cljc 19446 "$GO_ID" > /tmp/nbb-serve.log 2>&1) &
           timeout 60 bash -c 'until grep -q listening /tmp/nbb-serve.log 2>/dev/null; do sleep 1; done'
           (cd testdata && go run tls_peer.go -dial 127.0.0.1:19446 -identity /tmp/id-go -expect "$CLJC_ID")
@@ -217,7 +217,7 @@ jobs:
           clojure -M:tls-peer call /tmp/id-cljc 127.0.0.1:19448 "$GO_ID" \
             /echo.Echo/Echo 'hello from jvm' | tee /tmp/jvm-call.out
           grep -q 'response /echo.Echo/Echo:hello from jvm' /tmp/jvm-call.out
-          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljk \
             call /tmp/id-cljc 127.0.0.1:19448 "$GO_ID" \
             /echo.Echo/Echo 'hello from nbb' | tee /tmp/nbb-call.out
           grep -q 'response /echo.Echo/Echo:hello from nbb' /tmp/nbb-call.out
@@ -230,7 +230,7 @@ jobs:
           clojure -M:tls-peer check-in /tmp/id-cljc 127.0.0.1:19449 "$GO_ID" \
             127.0.0.1:28967 | tee /tmp/jvm-checkin.out
           grep -q 'ok   the satellite dialled this node back' /tmp/jvm-checkin.out
-          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+          nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljk \
             check-in /tmp/id-cljc 127.0.0.1:19449 "$GO_ID" 127.0.0.1:28967 \
             | tee /tmp/nbb-checkin.out
           grep -q 'ok   the satellite dialled this node back' /tmp/nbb-checkin.out
@@ -244,7 +244,7 @@ jobs:
       - name: The whole check-in loop against a strict satellite, no Docker
         run: |
           set -euo pipefail
-          # scripts/tls_peer.cljc's `satellite` mode. Unlike testdata/tls_peer.go
+          # scripts/tls_peer.cljk's `satellite` mode. Unlike testdata/tls_peer.go
           # it requires the DRPC mux header and serves exactly one rpc path, so
           # it refuses the two things a real satellite refused. Its docstring
           # says why that strictness is the point, and why this is coverage
@@ -262,10 +262,10 @@ jobs:
           # the same loop with the node on nbb
           (clojure -M:tls-peer satellite /tmp/id-go 19604 > /tmp/sat2.log 2>&1) &
           timeout 60 bash -c 'until grep -q "^listening" /tmp/sat2.log 2>/dev/null; do sleep 1; done'
-          (STORJ_MUX=1 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+          (STORJ_MUX=1 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljk \
             node /tmp/id-cljc 28969 > /tmp/nn.log 2>&1) &
           timeout 60 bash -c 'until grep -q "^listening" /tmp/nn.log 2>/dev/null; do sleep 1; done'
-          STORJ_MUX=1 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljc \
+          STORJ_MUX=1 nbb --classpath "$(clojure -A:cljs -Spath)" scripts/tls_peer.cljk \
             check-in /tmp/id-cljc 127.0.0.1:19604 "$GO_ID" 127.0.0.1:28969 | tee /tmp/loop2.out
           grep -q 'ok   the satellite dialled this node back' /tmp/loop2.out
       - name: A piece actually moves

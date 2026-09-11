@@ -6,7 +6,7 @@
       clojure -M:tls-peer dial  /tmp/id-b 127.0.0.1:19443 <expected-hex>
       clojure -M:tls-peer call  /tmp/id-b 127.0.0.1:19443 <expected-hex> \\
         /echo.Echo/Echo hello
-      nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/tls_peer.cljc \\
+      nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/tls_peer.cljk \\
         dial /tmp/id-b 127.0.0.1:19443 <expected-hex>
 
   In serve mode it prints `listening <port>` once bound, then accepts one

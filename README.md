@@ -363,7 +363,7 @@ refusal it claims to.
 
 ```sh
 clojure -M:test                                              # JVM
-nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
+nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljk
 clojure -M:lint
 cd testdata && go run gen_vectors.go                         # regenerate vectors
 cd testdata && go run gen_sigs.go -verify                    # recheck signatures

@@ -9,7 +9,7 @@
 // it from the .proto is exactly how one ends up with a plausible
 // implementation that verifies nothing.
 //
-// So the expected values in test/storj/node/pb_test.cljc are produced here,
+// So the expected values in test/storj/node/pb_test.cljk are produced here,
 // by linking storj.io/common and asking it. Regenerate with:
 //
 //	cd testdata && go run gen_vectors.go
