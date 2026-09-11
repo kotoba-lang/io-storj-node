@@ -43,7 +43,7 @@
 
   This is the one part of Storj's identity system that can be checked without
   the network, which makes it the one part that has real reference vectors
-  here: the published satellite node IDs. `test/storj/node/id_test.cljc`
+  here: the published satellite node IDs. `test/storj/node/id_test.cljk`
   decodes all four, and the checksums, lengths and difficulties in it were
   measured from the real strings rather than assumed.
 

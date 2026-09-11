@@ -9,7 +9,7 @@
   either.
 
       clojure -M:mint /tmp/identity-jvm 16
-      nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/mint_identity.cljc \\
+      nbb --classpath \"$(clojure -A:cljs -Spath)\" scripts/mint_identity.cljk \\
         /tmp/identity-cljs 16
       cd testdata && go run verify_minted.go -dir /tmp/identity-jvm
 
@@ -44,7 +44,7 @@
     (write! (str dir "/identity.cert") (ident/chain-pem (:chain m)))
     (write! (str dir "/identity.key")  (ident/private-key-pem leaf-key))
     (write! (str dir "/minted.edn")
-            (str "{;; minted by scripts/mint_identity.cljc — not a fixture\n"
+            (str "{;; minted by scripts/mint_identity.cljk — not a fixture\n"
                  " :node-id \"" (b/hex (:node-id m)) "\"\n"
                  " :difficulty " (:difficulty m) "\n"
                  " :attempts " (:attempts m) "\n"

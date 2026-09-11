@@ -15,7 +15,7 @@
 ;; same questions about the same bytes, is the only way to find out they
 ;; disagree before a peer does.
 ;;
-;;   nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljs
+;;   nbb --classpath "$(clojure -A:cljs -Spath)" scripts/verify-cljs.cljk
 (ns verify-cljs
   (:require [clojure.test :as t]
             [storj.node.certificate-test]
